@@ -137,12 +137,11 @@ The broader claim of the paper is that this gain comes from a stronger token-lev
 If you find this work useful, please cite:
 
 ```bibtex
-@misc{FIPO,
-  title = {FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization},
-  url = {https://qwen-pilot.notion.site/fipo},
-  author = {Chiyu Ma and Shuo Yang and Kexin Huang and Jinda Lu and Haoming Meng and Shangshang Wang and Bolin Ding and Soroush Vosoughi and Guoyin Wang and Jingren Zhou},
-  year = {2026},
-  month = {March},
+@article{ma2026fipo,
+  title={FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization},
+  author={Ma, Chiyu and Yang, Shuo and Huang, Kexin and Lu, Jinda and Meng, Haoming and Wang, Shangshang and Ding, Bolin and Vosoughi, Soroush and Wang, Guoyin and Zhou, Jingren},
+  journal={arXiv preprint arXiv:2603.19835},
+  year={2026}
 }
 ```
 
