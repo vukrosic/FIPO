@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-005",
+  "title": "End-to-end FIPO loss benchmark without Ray import path",
+  "summary": "Focused benchmark around compute_policy_loss_future_kl without importing the full Ray stack.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "benchmark",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "scripts/benchmark_fipo_loss.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_fipo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "32x2048 float32",
+      "32x2048 bfloat16-input float32-compute"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Show the full loss path win, not just helper-kernel wins.",
+  "results": {
+    "full_fipo_torch_ms": 1.148,
+    "future_kl_torch_ms": 1.893,
+    "future_kl_triton_ms": 0.087,
+    "future_kl_speedup_x": 21.86,
+    "influence_weights_torch_ms": 0.085,
+    "influence_weights_triton_ms": 0.061,
+    "influence_weights_speedup_x": 1.39,
+    "note": "Full FIPO path with Triton Future-KL and influence-weight helpers. Future-KL remains the main hotspot."
+  },
+  "notes": []
+}

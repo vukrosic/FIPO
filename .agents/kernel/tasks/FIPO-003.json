@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-003",
+  "title": "Masked-mean reduction kernel",
+  "summary": "Experimental reduction kernel kept out of the trainer path because it regressed.",
+  "priority": "P2",
+  "status": "rejected",
+  "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_light",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "scripts/benchmark_future_kl.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype float32 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "32x2048 float32"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Integrate only if the kernel beats torch on the representative shape.",
+  "results": {
+    "torch_ms": 0.058,
+    "triton_ms": 0.11,
+    "speedup_x": 0.53
+  },
+  "notes": [
+    "Validated and intentionally kept out of the trainer path because it regressed."
+  ]
+}

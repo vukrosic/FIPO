@@ -31,6 +31,7 @@ from omegaconf import DictConfig
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
 from verl.utils.import_utils import deprecated
+from verl.utils.kernel.future_kl import compute_future_kl, compute_influence_weights
 from verl.workers.config import ActorConfig
 
 PolicyLossFn = Callable[
@@ -968,6 +969,13 @@ def compute_policy_loss_future_kl(
 
     assert config is not None
     assert not isinstance(config, AlgoConfig)
+
+    # Keep the policy-loss math in fp32 even when upstream log-probs come from bf16 kernels.
+    old_log_prob = old_log_prob.float()
+    log_prob = log_prob.float()
+    advantages = advantages.float()
+    response_mask = response_mask.float()
+
     clip_ratio = config.clip_ratio  # Clipping parameter ε for standard PPO. See https://arxiv.org/abs/1707.06347.
     clip_ratio_low = config.clip_ratio_low if config.clip_ratio_low is not None else clip_ratio
     clip_ratio_high = config.clip_ratio_high if config.clip_ratio_high is not None else clip_ratio
@@ -1004,12 +1012,11 @@ def compute_policy_loss_future_kl(
     assert response_mask.size(1) == response_len, \
         f"Time dim mismatch: log_prob length={response_len}, response_mask length={response_mask.size(1)}"
 
-    chunk_size = config.policy_loss.get('chunk_size', 128)
-    decay_rate = config.policy_loss.get('decay_rate',128)
-    gamma = 2 ** (-1.0 / decay_rate) 
+    chunk_size = config.policy_loss.get("chunk_size", 128)
+    decay_rate = config.policy_loss.get("decay_rate", 128)
+    gamma = 2 ** (-1.0 / decay_rate)
+    future_kl_impl = config.policy_loss.get("future_kl_impl", "auto")
 
-    future_kl = torch.zeros((batch_size, response_len), device=device, dtype=log_prob.dtype)
-    pos_i = torch.arange(response_len, device=device).unsqueeze(1)  # (L,1)
     # to avoid high is token from the sample to deviate our training and weighting 
     # we exclude those greater than clip_frac_c. These tokens have no gradient neither in the following training. 
     filter_threshold = torch.log(torch.tensor(clip_ratio_c, device=device, dtype=log_prob.dtype))    
@@ -1018,52 +1025,34 @@ def compute_policy_loss_future_kl(
     participation_mask = ~ignore_mask
     kl_response_premask = negative_approx_kl * response_mask.to(log_prob.dtype) # response mased kl diff
     kl_response = kl_response_premask * participation_mask.to(log_prob.dtype) 
-    
-    gamma_t = torch.tensor(gamma, dtype=log_prob.dtype, device=device)
-    for j_start in range(0, response_len, chunk_size):
-        j_end = min(response_len, j_start + chunk_size)
-        j_idx = torch.arange(j_start, j_end, device=device).unsqueeze(0)  # (1, Kb)
-        # distance shape (L, Kb) where entry (i,k) = j - i
-        distance = j_idx - pos_i
-        mask = distance >= 0  # zero out j < i
-        distance_clamped = distance.clamp(min=0)
-        # decay_block (L, Kb)
-        decay_block = torch.pow(gamma_t, distance_clamped) * mask.to(log_prob.dtype)
-        # kl_block (B, Kb)
-        kl_block = kl_response[:, j_start:j_end]
-        # contribution: for this block, contrib_{b,i} = sum_k kl_block[b,k] * decay_block[i,k]
-        # compute via matmul: (B, Kb) @ (Kb, L) -> (B, L)
-        contrib = torch.matmul(kl_block, decay_block.t())
-        future_kl += contrib
+    future_kl = compute_future_kl(
+        kl_response=kl_response,
+        gamma=gamma,
+        impl=future_kl_impl,
+        chunk_size=chunk_size,
+    )
 
-    if config.policy_loss.get("future_kl_clip_ratio") != 0.0:
-        clip_ratio = config.policy_loss.get("future_kl_clip_ratio")
-        if not config.policy_loss.get('future_kl_clip_high_only'):
-            # seems to work well with smaller models such as 7b --> usually create lower entropy
-            upper_bound = 1.0 + clip_ratio
-            lower_bound = 1.0 - clip_ratio
-            influence_weights = torch.clamp(torch.exp(future_kl),  min=lower_bound,max=upper_bound).detach()
-        else:
-            # a radical way to update model, works fine for larger model to break boundary hopefully
-            upper_bound = 1.0 + clip_ratio
-            lower_bound = 1.0
-            influence_weights = torch.clamp(torch.exp(future_kl),  min=1.0,max=1.0+clip_ratio).detach()
-    else:
-        upper_bound = 10.0
-        lower_bound = 0.0
-        influence_weights = torch.clamp(torch.exp(future_kl),  max=10.0).detach()
-    # Apply a safety threshold: if a negative sample's IS value is too high and its weight is increasing, cap it at the baseline value (1.0)
-    # To avoid over-penalization
-    safe_threshold = config.policy_loss.get('safety_thresh', 4.0)
-    mask_neg_high_is = (advantages < 0) & (ratio > safe_threshold)
-    influence_weights = torch.where(mask_neg_high_is, torch.clamp(influence_weights, min=0.8, max=1.0), influence_weights)
+    clip_ratio = config.policy_loss.get("future_kl_clip_ratio", 0.0)
+    clip_high_only = config.policy_loss.get("future_kl_clip_high_only", False)
+    safe_threshold = config.policy_loss.get("safety_thresh", 4.0)
+    raw_influence_weights, influence_weights, lower_bound, upper_bound = compute_influence_weights(
+        future_kl=future_kl,
+        advantages=advantages,
+        ratio=ratio,
+        clip_ratio=clip_ratio,
+        clip_high_only=clip_high_only,
+        safe_threshold=safe_threshold,
+        impl=future_kl_impl,
+    )
+    influence_weights = influence_weights.detach()
+    raw_influence_weights = raw_influence_weights.detach()
     # calcuate clip ratio
     clip_frac_upper = verl_F.masked_mean((influence_weights >= upper_bound - 1e-7).float(), response_mask)
     clip_frac_lower = verl_F.masked_mean((influence_weights <= lower_bound + 1e-7).float(), response_mask)
     total_clip_frac = clip_frac_upper + clip_frac_lower
     # add stats for raw influence weight 
-    influence_weights_mean_raw = verl_F.masked_mean(torch.exp(future_kl), response_mask)
-    valid_vals_raw = torch.exp(future_kl)[response_mask.to(dtype=torch.bool, device=influence_weights.device)]
+    influence_weights_mean_raw = verl_F.masked_mean(raw_influence_weights, response_mask)
+    valid_vals_raw = raw_influence_weights[response_mask.to(dtype=torch.bool, device=influence_weights.device)]
     raw_influence_weights_min = valid_vals_raw.min()
     raw_influence_weights_max = valid_vals_raw.max()
     # add status check of the influence_weights

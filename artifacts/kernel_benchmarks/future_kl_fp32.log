@@ -1,0 +1,10 @@
+input_dtype=torch.float32 compute_dtype=torch.float32
+helper/torch: mean=2.025 ms p50=2.010 ms min=1.963 ms
+helper/triton: mean=0.084 ms p50=0.083 ms min=0.082 ms
+helper/speedup=24.05x
+influence/torch: mean=0.083 ms p50=0.083 ms min=0.082 ms
+influence/triton: mean=0.059 ms p50=0.057 ms min=0.056 ms
+influence/speedup=1.42x
+masked_mean/torch: mean=0.063 ms p50=0.061 ms min=0.060 ms
+masked_mean/triton: mean=0.108 ms p50=0.106 ms min=0.104 ms
+masked_mean/speedup=0.58x

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-007",
+  "title": "Profile FIPO metrics to find next true hotspot",
+  "summary": "Profile the metric-heavy sections of core_algos.py and rank any remaining real GPU hotspots.",
+  "priority": "P1",
+  "status": "queued",
+  "owner": "unclaimed",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "profiler",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/trainer/ppo/core_algos.py",
+    "scripts/"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "TODO: add focused profiler script",
+    "representative_shapes": [
+      "Match the Future-KL loss path"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Produce a ranked hotspot list with ms totals before proposing another kernel.",
+  "results": null,
+  "notes": []
+}

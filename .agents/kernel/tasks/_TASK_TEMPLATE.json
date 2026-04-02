@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-000",
+  "title": "Short task title",
+  "summary": "One-line summary of the work item.",
+  "priority": "P1",
+  "status": "queued",
+  "owner": "unclaimed",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "path/to/file.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/example_benchmark.py --shape 32x2048",
+    "representative_shapes": [
+      "32x2048 float32"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Match the torch reference and beat the baseline on the representative benchmark.",
+  "results": null,
+  "notes": []
+}

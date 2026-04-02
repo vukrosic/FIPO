@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-004",
+  "title": "Expand autotune coverage for linear-cross-entropy kernels",
+  "summary": "Broadened Triton autotune coverage for CE forward and backward kernels.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "autotune",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/kernels.py",
+    "verl/utils/kernel/linear_cross_entropy.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "TODO: add scripts/benchmark_linear_ce.py",
+    "representative_shapes": [
+      "Match PPO postprocessing CE shapes"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Expand the config surface without regressing correctness, then measure it with a dedicated CE benchmark.",
+  "results": {
+    "forward_kernel_configs": 8,
+    "backward_kernel_configs": 6,
+    "epilogue_kernel_configs": 6,
+    "note": "Expanded autotune configs for forward mainloop (1->8), backward kernels (1->6 each), and epilogue kernels (1->6 each). Configs cover small, medium, and large token-vocab combinations."
+  },
+  "notes": []
+}

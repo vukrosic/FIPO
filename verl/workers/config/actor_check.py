@@ -53,6 +53,7 @@ class PolicyLossConfig(BaseConfig):
     future_kl_clip_ratio: float = 0.0
     # future_kl_clip_high_only: bool = False
     # future_kl_use_log_prob_sum: bool = False
+    future_kl_impl: str = "auto"
     future_kl_filter_extreme: bool = False
 
 

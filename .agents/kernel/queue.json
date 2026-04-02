@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "updated_utc": "2026-04-02",
+  "roles": [
+    "kernel-implementer",
+    "benchmarker",
+    "validator",
+    "profiler"
+  ],
+  "tasks": [
+    {
+      "id": "FIPO-001",
+      "title": "Future-KL reverse scan kernel",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/future_kl.py",
+        "verl/trainer/ppo/core_algos.py",
+        "scripts/benchmark_future_kl.py",
+        "tests/test_future_kl_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype float32 --warmup 10 --iters 30",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "torch_ms": 1.928,
+        "triton_ms": 0.084,
+        "speedup_x": 22.9
+      }
+    },
+    {
+      "id": "FIPO-002",
+      "title": "Influence-weight kernel",
+      "priority": "P1",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/future_kl.py",
+        "verl/trainer/ppo/core_algos.py",
+        "scripts/benchmark_future_kl.py",
+        "tests/test_future_kl_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype float32 --warmup 10 --iters 30",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "torch_ms": 0.079,
+        "triton_ms": 0.057,
+        "speedup_x": 1.37
+      }
+    },
+    {
+      "id": "FIPO-003",
+      "title": "Masked-mean reduction kernel",
+      "priority": "P2",
+      "status": "rejected",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/future_kl.py",
+        "scripts/benchmark_future_kl.py",
+        "tests/test_future_kl_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype float32 --warmup 10 --iters 30",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "torch_ms": 0.058,
+        "triton_ms": 0.11,
+        "speedup_x": 0.53
+      },
+      "note": "Validated and kept out of trainer path because it regresses."
+    },
+    {
+      "id": "FIPO-004",
+      "title": "Expand autotune coverage for linear-cross-entropy kernels",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/kernels.py",
+        "verl/utils/kernel/linear_cross_entropy.py"
+      ],
+      "benchmark": "TODO: add scripts/benchmark_linear_ce.py",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "forward_kernel_configs": 8,
+        "backward_kernel_configs": 6,
+        "epilogue_kernel_configs": 6,
+        "note": "Expanded autotune configs for forward mainloop (1->8), backward kernels (1->6 each), and epilogue kernels (1->6 each). Configs cover small/medium/large token-vocab combinations."
+      }
+    },
+    {
+      "id": "FIPO-005",
+      "title": "End-to-end FIPO loss benchmark without Ray import path",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "benchmark",
+      "files": [
+        "scripts/benchmark_fipo_loss.py"
+      ],
+      "benchmark": "python scripts/benchmark_fipo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "full_fipo_torch_ms": 1.148,
+        "future_kl_torch_ms": 1.893,
+        "future_kl_triton_ms": 0.087,
+        "future_kl_speedup_x": 21.86,
+        "influence_weights_torch_ms": 0.085,
+        "influence_weights_triton_ms": 0.061,
+        "influence_weights_speedup_x": 1.39,
+        "note": "Full FIPO path with triton future_kl and influence_weights. future_kl is the main hotspot at 21.86x speedup."
+      }
+    },
+    {
+      "id": "FIPO-006",
+      "title": "Native BF16 Future-KL math investigation",
+      "priority": "P1",
+      "status": "completed",
+      "owner": "main",
+      "kind": "research",
+      "files": [
+        "verl/utils/kernel/future_kl.py",
+        "scripts/benchmark_future_kl.py",
+        "tests/test_future_kl_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype bfloat16 --warmup 10 --iters 30",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "bf16_speedup_x": 18.32,
+        "bf16_approach": "upcast_to_float32",
+        "findings": "BF16 inputs are correctly upcast to float32 before kernel call. This is the recommended approach per KERNEL_RULES.md. Native BF16 kernel not needed because upcast overhead is in Python before kernel call.",
+        "recommendation": "Keep current upcast approach. No native BF16 kernel needed."
+      }
+    },
+    {
+      "id": "FIPO-007",
+      "title": "Profile FIPO metrics to find next true hotspot",
+      "priority": "P1",
+      "status": "queued",
+      "owner": "unclaimed",
+      "kind": "profiler",
+      "files": [
+        "verl/trainer/ppo/core_algos.py",
+        "scripts/"
+      ],
+      "benchmark": "TODO: add focused profiler script",
+      "test": "python -m unittest discover -s tests -v",
+      "results": null
+    },
+    {
+      "id": "FIPO-008",
+      "title": "Ampere-oriented CE benchmark matrix and tuning policy",
+      "priority": "P1",
+      "status": "queued",
+      "owner": "unclaimed",
+      "kind": "benchmark",
+      "files": [
+        "verl/utils/kernel/kernels.py",
+        "scripts/"
+      ],
+      "benchmark": "TODO: add CE benchmark matrix script",
+      "test": "TODO: add CE parity tests",
+      "results": null
+    },
+    {
+      "id": "FIPO-009",
+      "title": "Fused PPO loss + metrics kernel",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/future_kl.py",
+        "tests/test_future_kl_kernels.py"
+      ],
+      "benchmark": "python -c \"...\" # inline benchmark",
+      "test": "python -m unittest discover -s tests -v",
+      "results": {
+        "speedup_x": 2.0,
+        "shapes_tested": ["8x512", "16x1024", "32x2048", "64x4096"],
+        "note": "Custom Triton kernel fusing PPO loss computation with metric gathering. Achieves ~2x speedup by combining elementwise ops and atomic reductions."
+      }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-006",
+  "title": "Native BF16 Future-KL math investigation",
+  "summary": "Investigate whether native BF16 recurrence math can match parity and beat the current float32-compute path.",
+  "priority": "P1",
+  "status": "queued",
+  "owner": "unclaimed",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "research",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "scripts/benchmark_future_kl.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype bfloat16 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "32x2048 bfloat16"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Only integrate if native BF16 preserves parity and provides a real speed benefit.",
+  "results": null,
+  "notes": []
+}

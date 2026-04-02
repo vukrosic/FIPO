@@ -54,6 +54,7 @@ class PolicyLossConfig(BaseConfig):
     #future_kl_clip_high: bool = False
     decay_rate: float = 128.0
     chunk_size: int = 128
+    future_kl_impl: str = "auto"
     future_kl_clip_high_only: bool = False
     # future_kl_use_log_prob_sum: bool = False
     future_kl_filter_extreme: bool = False

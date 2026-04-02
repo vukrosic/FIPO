@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-008",
+  "title": "Ampere-oriented CE benchmark matrix and tuning policy",
+  "summary": "Decide whether CE autotune should stay device-agnostic or split by measured architecture buckets.",
+  "priority": "P1",
+  "status": "queued",
+  "owner": "unclaimed",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "benchmark",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/kernels.py",
+    "scripts/"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "TODO: add CE benchmark matrix script",
+    "representative_shapes": [
+      "Ampere-friendly CE shapes"
+    ]
+  },
+  "tests": {
+    "command": "TODO: add CE parity tests"
+  },
+  "success_gate": "Keep the default path device-agnostic unless a measured split is justified.",
+  "results": null,
+  "notes": []
+}

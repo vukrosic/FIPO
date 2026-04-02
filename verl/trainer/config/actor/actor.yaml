@@ -62,6 +62,9 @@ policy_loss:
   # KL divergence penalty coefficient
   ppo_kl_coef: 0.1
 
+  # Implementation backend for Future-KL. Options: auto / torch / triton
+  future_kl_impl: auto
+
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0
 
