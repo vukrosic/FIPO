@@ -12,6 +12,11 @@ Use this queue to keep GPU kernel work moving without duplicate effort.
 - `FIPO-003` Masked-mean kernel:
   - shape `32 x 2048`, float32: torch `0.058 ms`, triton `0.110 ms`, `0.53x`
   - status: validated but not integrated because it regresses
+- `FIPO-007` Scalar metrics fused computation:
+  - shape `32 x 2048`, float32: original `1.68 ms`, fused `1.01 ms`, `1.66x`
+  - Uses single-sort multi-quantile approach instead of multiple separate quantile calls
+- `FIPO-009` Fused PPO loss + metrics kernel:
+  - Achieves ~2x speedup by fusing elementwise PPO ops and atomic reductions
 
 ## Queue Rules
 
@@ -31,17 +36,16 @@ Use this queue to keep GPU kernel work moving without duplicate effort.
 | FIPO-004 | P0 | completed | main | Expand Triton autotune configs for `verl/utils/kernel/kernels.py` linear-cross-entropy forward/backward kernels | Add a dedicated CE benchmark script and run on `T x V` shapes that match PPO postprocessing | Expanded autotune configs: forward mainloop 1->8, backward kernels 1->6 each, epilogue 1->6. Covers small/medium/large token-vocab combos. Tests pass. |
 | FIPO-005 | P0 | completed | main | Create an end-to-end PPO/FIPO loss benchmark that isolates `compute_policy_loss_future_kl` without importing the full Ray stack | `python scripts/benchmark_fipo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30` | Created `scripts/benchmark_fipo_loss.py`. Full FIPO loss path: 1.148 ms. Future-KL hotspot: 1.893 ms torch → 0.087 ms triton (21.86x). Influence weights: 0.085 ms torch → 0.061 ms triton (1.39x). |
 | FIPO-006 | P1 | completed | main | Investigate native BF16 kernel math for Future-KL without relying on float32 upcast | Extend `scripts/benchmark_future_kl.py` with native BF16 compare mode | BF16 upcast approach confirmed correct. 18.32x speedup with float32 compute. Native BF16 kernel not needed. |
-| FIPO-007 | P1 | queued | unclaimed | Profile repeated scalar metrics in FIPO and identify any other real GPU hotspots worth kernelizing | Use torch profiler or CUDA events around metric sections in `core_algos.py` | Produce a ranked hotspot list with ms totals |
-| FIPO-008 | P1 | queued | unclaimed | Add CE benchmark coverage for Ampere-friendly autotune grids and decide whether architecture-specific config buckets are needed | New CE benchmark matrix script | Keep device-agnostic default unless a split is justified by measured data |
+| FIPO-007 | P1 | completed | main | Profile repeated scalar metrics in FIPO and identify any other real GPU hotspots worth kernelizing | `python scripts/benchmark_ratio_metrics.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30` | Profiling revealed scalar metrics take 1.67ms. Fused single-sort multi-quantile approach achieves 1.65x speedup (1.67ms → 1.01ms). Correctness verified. |
+| FIPO-008 | P1 | completed | main | Add CE benchmark coverage for Ampere-friendly autotune grids and decide whether architecture-specific config buckets are needed | `python scripts/benchmark_linear_cross_entropy.py --matrix --warmup 5 --iters 20 --dtype bfloat16` | Benchmark matrix shows device-agnostic autotune is sufficient for Ampere. No architecture-specific configs needed. |
 | FIPO-009 | P0 | completed | main | Fused PPO loss + metrics kernel in `verl/utils/kernel/future_kl.py` | Inline benchmark across shapes | Custom Triton kernel: 2.0x speedup by fusing elementwise PPO ops and atomic reductions. Tests pass (9 tests). |
+| FIPO-010 | P0 | queued | unclaimed | CE kernel split vocabulary optimization for large vocab sizes | `python scripts/benchmark_linear_cross_entropy.py --matrix --warmup 5 --iters 20 --dtype bfloat16` | CE forward/backward dominate runtime at 50-225ms. Current split at 4096/16384 may not be optimal for all vocab sizes. Profile and tune split boundaries. |
 
 ## Recommended Execution Order
 
-1. `FIPO-005`
-2. `FIPO-004`
-3. `FIPO-007`
-4. `FIPO-006`
-5. `FIPO-008`
+1. `FIPO-010` (CE kernel split optimization - CE dominates runtime at 50-225ms)
+2. `FIPO-009` already integrated (Fused PPO loss kernel - 2x speedup)
+3. `FIPO-007` completed (Scalar metrics - 1.66x speedup, compute_ratio_metrics available)
 
 ## Standard Commands
 

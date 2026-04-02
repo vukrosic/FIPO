@@ -194,6 +194,68 @@ class FutureKLKernelCUDATest(unittest.TestCase):
         torch.testing.assert_close(actual_loss, expected_loss, rtol=1e-4, atol=1e-4)
         torch.testing.assert_close(actual_clipfrac, expected_clipfrac, rtol=1e-4, atol=1e-4)
 
+    def test_compute_ratio_metrics_matches_original_pattern(self):
+        """Verify compute_ratio_metrics produces same results as original scalar metrics pattern."""
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+
+        batch_size, response_len = 16, 257
+        clip_ratio_c = 3.0
+        ratio = torch.exp(0.1 * torch.randn(batch_size, response_len, device="cuda", dtype=torch.float32))
+        advantages = (torch.rand(batch_size, response_len, device="cuda") - 0.5) * 2.0
+        response_mask = (torch.rand(batch_size, response_len, device="cuda") > 0.1).float()
+
+        # Original pattern from core_algos.py
+        def original_metrics(ratio, advantages, response_mask):
+            is_negative_adv = (advantages < 0)
+            neg_valid = ratio[(advantages < 0) & response_mask.bool()]
+            pos_valid = ratio[(advantages > 0) & response_mask.bool()]
+
+            result = {}
+            if neg_valid.numel() > 0:
+                result["neg_is_max"] = neg_valid.max()
+                result["neg_is_p75"] = torch.quantile(neg_valid, 0.75)
+                result["neg_is_p995"] = torch.quantile(neg_valid, 0.995)
+                result["neg_is_p999"] = torch.quantile(neg_valid, 0.999)
+            else:
+                result["neg_is_max"] = torch.tensor(0.0, device=ratio.device)
+                result["neg_is_p995"] = torch.tensor(0.0, device=ratio.device)
+                result["neg_is_p999"] = torch.tensor(0.0, device=ratio.device)
+                result["neg_is_p75"] = torch.tensor(0.0, device=ratio.device)
+
+            if pos_valid.numel() > 0:
+                result["pos_is_max"] = pos_valid.max()
+                result["pos_is_p25"] = torch.quantile(pos_valid, 0.25)
+                result["pos_is_median"] = torch.quantile(pos_valid, 0.5)
+                result["pos_is_p75"] = torch.quantile(pos_valid, 0.75)
+                result["pos_is_p995"] = torch.quantile(pos_valid, 0.995)
+                result["pos_is_p999"] = torch.quantile(pos_valid, 0.999)
+                result["pos_is_min"] = pos_valid.min()
+            else:
+                result["pos_is_p25"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_max"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_median"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_p75"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_p995"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_p999"] = torch.tensor(0.0, device=ratio.device)
+                result["pos_is_min"] = torch.tensor(0.0, device=ratio.device)
+
+            result["neg_ratio_2_3"] = (((ratio >= 2.0) & (ratio < 3.0) & is_negative_adv).float() * response_mask).sum() / (response_mask.sum() + 1e-8)
+            result["neg_ratio_3_4"] = (((ratio >= 3.0) & (ratio < 4.0) & is_negative_adv).float() * response_mask).sum() / (response_mask.sum() + 1e-8)
+            result["neg_ratio_4_10"] = (((ratio >= 4.0) & (ratio < clip_ratio_c) & is_negative_adv).float() * response_mask).sum() / (response_mask.sum() + 1e-8)
+            result["pos_mini_frac"] = (((ratio < 1e-3) & (advantages > 0)).float() * response_mask).sum() / (response_mask.sum() + 1e-8)
+            return result
+
+        orig = original_metrics(ratio, advantages, response_mask)
+        fused = FUTURE_KL.compute_ratio_metrics(ratio, advantages, response_mask, clip_ratio_c=clip_ratio_c)
+
+        for key in orig:
+            orig_val = orig[key].item()
+            fused_val = fused[key].item()
+            if abs(orig_val) > 1e-6 or abs(fused_val) > 1e-6:
+                rel_diff = abs(orig_val - fused_val) / (abs(orig_val) + 1e-8)
+                self.assertLess(rel_diff, 1e-4, f"{key}: orig={orig_val}, fused={fused_val}")
+
 
 if __name__ == "__main__":
     unittest.main()

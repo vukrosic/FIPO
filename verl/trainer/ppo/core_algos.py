@@ -31,7 +31,8 @@ from omegaconf import DictConfig
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
 from verl.utils.import_utils import deprecated
-from verl.utils.kernel.future_kl import compute_future_kl, compute_influence_weights
+from verl.utils.kernel.advantage_kernels import compute_discounted_returns, compute_gae_advantages_returns
+from verl.utils.kernel.future_kl import compute_future_kl, compute_influence_weights, compute_ratio_metrics
 from verl.workers.config import ActorConfig
 
 PolicyLossFn = Callable[
@@ -236,23 +237,16 @@ def compute_gae_advantage_return(
 
     """
     with torch.no_grad():
-        nextvalues = 0
-        lastgaelam = 0
-        advantages_reversed = []
-        gen_len = token_level_rewards.shape[-1]
-
-        for t in reversed(range(gen_len)):
-            delta = token_level_rewards[:, t] + gamma * nextvalues - values[:, t]
-            lastgaelam_ = delta + gamma * lam * lastgaelam
-
-            # skip values and TD-error on observation tokens
-            nextvalues = values[:, t] * response_mask[:, t] + (1 - response_mask[:, t]) * nextvalues
-            lastgaelam = lastgaelam_ * response_mask[:, t] + (1 - response_mask[:, t]) * lastgaelam
-
-            advantages_reversed.append(lastgaelam)
-        advantages = torch.stack(advantages_reversed[::-1], dim=1)
-
-        returns = advantages + values
+        advantages, returns = compute_gae_advantages_returns(
+            token_level_rewards=token_level_rewards.float(),
+            values=values.float(),
+            response_mask=response_mask.float(),
+            gamma=float(gamma),
+            lam=float(lam),
+            impl="auto",
+        )
+        advantages = advantages.to(token_level_rewards.dtype)
+        returns = returns.to(values.dtype)
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
 
@@ -571,14 +565,12 @@ def compute_reinforce_plus_plus_outcome_advantage(
     assert config is not None
     gamma = config.gamma
     with torch.no_grad():
-        returns = torch.zeros_like(token_level_rewards)
-        running_return = 0
-
-        for t in reversed(range(token_level_rewards.shape[1])):
-            running_return = token_level_rewards[:, t] + gamma * running_return
-            returns[:, t] = running_return
-            # Reset after EOS
-            running_return = running_return * response_mask[:, t]
+        returns = compute_discounted_returns(
+            token_level_rewards=token_level_rewards.float(),
+            response_mask=response_mask.float(),
+            gamma=float(gamma),
+            impl="auto",
+        ).to(token_level_rewards.dtype)
 
         advantages = verl_F.masked_whiten(returns, response_mask)
         advantages = advantages * response_mask
@@ -616,7 +608,12 @@ def compute_remax_outcome_advantage(
     """
 
     with torch.no_grad():
-        returns = (token_level_rewards * response_mask).flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
+        returns = compute_discounted_returns(
+            token_level_rewards=(token_level_rewards * response_mask).float(),
+            response_mask=response_mask.float(),
+            gamma=1.0,
+            impl="auto",
+        ).to(token_level_rewards.dtype)
         advantages = returns - reward_baselines.unsqueeze(-1) * response_mask
 
     return advantages, returns
@@ -1109,41 +1106,28 @@ def compute_policy_loss_future_kl(
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=final_mask_f, loss_agg_mode=loss_agg_mode)
 
     # Start gathering the rest of stats information
-    neg_ratio_2_3 = verl_F.masked_mean(((ratio >= 2.0) & (ratio < 3.0) & is_negative_adv).float(), response_mask)
-    neg_ratio_3_4 = verl_F.masked_mean(((ratio >= 3.0) & (ratio < 4.0) & is_negative_adv).float(), response_mask)
-    neg_ratio_4_10 = verl_F.masked_mean(((ratio >= 4.0) & (ratio < clip_ratio_c) & is_negative_adv).float(), response_mask)
-    neg_valid = ratio[(advantages < 0) & response_mask.bool()]
-    if neg_valid.numel() > 0:
-        neg_is_max = neg_valid.max()
-        neg_is_p75 = torch.quantile(neg_valid, 0.75)
-        neg_is_p995 = torch.quantile(neg_valid, 0.995)
-        neg_is_p999 = torch.quantile(neg_valid, 0.999)
-    else:
-        neg_is_max = torch.tensor(0.0, device=ratio.device)
-        neg_is_p995 = torch.tensor(0.0, device=ratio.device)
-        neg_is_p999 = torch.tensor(0.0, device=ratio.device)
-        neg_is_p75 = torch.tensor(0.0, device=ratio.device)
-
-    pos_valid = ratio[(advantages > 0) & response_mask.bool()]
-    if pos_valid.numel() > 0:
-        pos_is_max = pos_valid.max()
-        pos_is_p25 = torch.quantile(pos_valid, 0.25)
-        pos_is_median = torch.quantile(pos_valid, 0.5)
-        pos_is_p75 = torch.quantile(pos_valid, 0.75)
-        pos_is_p995 = torch.quantile(pos_valid, 0.995)
-        pos_is_p999 = torch.quantile(pos_valid, 0.999)
-        pos_is_min = pos_valid.min()
-    else:
-        pos_is_p25 = torch.tensor(0.0, device=ratio.device)
-        pos_is_max = torch.tensor(0.0, device=ratio.device)
-        pos_is_median = torch.tensor(0.0, device=ratio.device)
-        pos_is_p75 = torch.tensor(0.0, device=ratio.device)
-        pos_is_p995 = torch.tensor(0.0, device=ratio.device)
-        pos_is_p995 = torch.tensor(0.0, device=ratio.device)
-        pos_is_p999 = torch.tensor(0.0, device=ratio.device)
-        pos_is_min = torch.tensor(0.0, device=ratio.device)
-
-    pos_mini_frac = verl_F.masked_mean(((ratio < 1e-3) & (advantages > 0)).float(), response_mask)
+    ratio_metrics = compute_ratio_metrics(
+        ratio=ratio,
+        advantages=advantages,
+        response_mask=response_mask,
+        clip_ratio_c=clip_ratio_c,
+        impl="auto",
+    )
+    neg_ratio_2_3 = ratio_metrics["neg_ratio_2_3"]
+    neg_ratio_3_4 = ratio_metrics["neg_ratio_3_4"]
+    neg_ratio_4_10 = ratio_metrics["neg_ratio_4_10"]
+    neg_is_max = ratio_metrics["neg_is_max"]
+    neg_is_p75 = ratio_metrics["neg_is_p75"]
+    neg_is_p995 = ratio_metrics["neg_is_p995"]
+    neg_is_p999 = ratio_metrics["neg_is_p999"]
+    pos_is_max = ratio_metrics["pos_is_max"]
+    pos_is_p25 = ratio_metrics["pos_is_p25"]
+    pos_is_median = ratio_metrics["pos_is_median"]
+    pos_is_p75 = ratio_metrics["pos_is_p75"]
+    pos_is_p995 = ratio_metrics["pos_is_p995"]
+    pos_is_p999 = ratio_metrics["pos_is_p999"]
+    pos_is_min = ratio_metrics["pos_is_min"]
+    pos_mini_frac = ratio_metrics["pos_mini_frac"]
 
     return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower, influence_weights_mean, influence_weights_min, influence_weights_max, total_clip_frac, clip_frac_upper, clip_frac_lower, \
            influence_weights_mean_raw, raw_influence_weights_min, raw_influence_weights_max,neg_ratio_2_3, neg_ratio_3_4, neg_ratio_4_10, \
