@@ -133,26 +133,57 @@ class Config:
     Args:
         _backward (BackwardEnum): Backward computation method. Defaults to BackwardEnum._Split_Dlogits_N.
         _use_triton (bool): Whether to use Triton kernels for computation. Defaults to True.
+        _forward_vocab_per_split (int): Vocabulary split size for forward pass.
+        _backward_vocab_per_split (int): Vocabulary split size for backward pass.
     """
 
     _backward: BackwardEnum = BackwardEnum._Split_Dlogits_N
     _use_triton: bool = True
+    _forward_vocab_per_split: int = 4096
+    _backward_vocab_per_split: int = 16384
 
 
 _config = Config()
 
 
 def set_backward_method(backward_method: BackwardEnum):
-    """
-    Set the backward method.
-    """
+    """Set the backward method."""
     global _config
     _config._backward = backward_method
 
 
+def _validate_forward_vocab_per_split(vocab_per_split: int):
+    if vocab_per_split <= 0 or vocab_per_split % 128 != 0:
+        raise ValueError(f"forward vocab_per_split must be positive and divisible by 128, got {vocab_per_split}")
+
+
+def _validate_backward_vocab_per_split(vocab_per_split: int):
+    if vocab_per_split <= 0:
+        raise ValueError(f"backward vocab_per_split must be positive, got {vocab_per_split}")
+
+
+def set_forward_vocab_per_split(vocab_per_split: int):
+    """Set the forward split size for the CE mainloop host path."""
+    global _config
+    _validate_forward_vocab_per_split(vocab_per_split)
+    _config._forward_vocab_per_split = vocab_per_split
+
+
+def set_backward_vocab_per_split(vocab_per_split: int):
+    """Set the split size for the split-N CE backward path."""
+    global _config
+    _validate_backward_vocab_per_split(vocab_per_split)
+    _config._backward_vocab_per_split = vocab_per_split
+
+
 @triton.autotune(
-    configs=[triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32}, num_stages=3, num_warps=8)],
-    key=["num_tokens", "hidden_size", "vocab_size"],
+    configs=[
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32}, num_stages=3, num_warps=8),
+    ],
+    key=["num_tokens", "hidden_size", "vocab_size", "vocab_per_split"],
 )
 @triton.jit
 def efficient_entropy_kernel_general_mainloop(
@@ -558,8 +589,8 @@ def efficient_entropy_forward(
     entropy_b = accumulate_and_entropy_b_view[1, :]
     assert maximum.is_contiguous() and accumulate.is_contiguous() and entropy_b.is_contiguous()
 
-    vocab_per_split = 1024
-    assert vocab_per_split % 128 == 0
+    vocab_per_split = _config._forward_vocab_per_split
+    _validate_forward_vocab_per_split(vocab_per_split)
     num_splits = (vocab_size + vocab_per_split - 1) // vocab_per_split
 
     _max = torch.empty((num_tokens, num_splits), device=hidden.device, dtype=torch.float32)
@@ -1123,11 +1154,10 @@ def efficient_entropy_backward_kernel_d_weight(
 # NOTE: split tile from d_logits' perspective
 @triton.autotune(
     configs=[
-        triton.Config(
-            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 16},
-            num_stages=3,
-            num_warps=8,
-        ),
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 16}, num_stages=3, num_warps=8),
     ],
     key=["num_tokens", "hidden_size", "vocab_size"],
 )
@@ -1262,13 +1292,12 @@ def efficient_entropy_backward_kernel_general_d_logits(
 
 @triton.autotune(
     configs=[
-        triton.Config(
-            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 16},
-            num_stages=3,
-            num_warps=8,
-        ),
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 16}, num_stages=3, num_warps=8),
     ],
-    key=["num_tokens", "hidden_size", "vocab_size"],
+    key=["num_tokens", "hidden_size", "vocab_size", "vocab_per_split"],
 )
 @triton.jit
 def efficient_entropy_backward_kernel_general_d_logits_split_N(
@@ -1432,8 +1461,8 @@ def efficient_entropy_backward(
     assert maximum.shape == labels.shape == acc.shape
     assert maximum.is_cuda and acc.is_cuda
 
-    vocab_per_split = 1024
-    assert vocab_per_split % 128 == 0
+    vocab_per_split = _config._backward_vocab_per_split
+    _validate_backward_vocab_per_split(vocab_per_split)
     num_splits = (vocab_size + vocab_per_split - 1) // vocab_per_split
 
     assert entropy_b.is_contiguous() and entropy_b.is_cuda
@@ -1522,7 +1551,8 @@ def efficient_entropy_backward(
             raise AssertionError("Triton is required for efficient entropy kernel")
 
     elif _config._backward == BackwardEnum._Split_Dlogits_N:
-        vocab_per_split = 9504
+        vocab_per_split = _config._backward_vocab_per_split
+        _validate_backward_vocab_per_split(vocab_per_split)
         num_splits = (vocab_size + vocab_per_split - 1) // vocab_per_split
 
         _d_logits = torch.empty((num_tokens, vocab_per_split), device=hidden.device, dtype=hidden.dtype).contiguous()
