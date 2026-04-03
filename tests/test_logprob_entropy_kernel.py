@@ -90,6 +90,16 @@ class LogprobEntropyCPUTest(unittest.TestCase):
         self.assertEqual(lp.dtype,  torch.float32)
         self.assertEqual(ent.dtype, torch.float32)
 
+    def test_actor_like_2d_inputs(self):
+        N, V = 32, 256
+        logits = torch.randn(N, V)
+        token_ids = torch.randint(0, V, (N,))
+        ref_lp = _ref_logprob(logits, token_ids)
+        ref_ent = _ref_entropy(logits)
+        lp, ent = LE.compute_logprob_and_entropy(logits, token_ids, impl="torch")
+        torch.testing.assert_close(lp, ref_lp, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(ent, ref_ent, rtol=1e-5, atol=1e-5)
+
     def test_auto_falls_back_on_cpu(self):
         B, T, V = 2, 8, 128
         logits    = torch.randn(B, T, V)
@@ -193,6 +203,15 @@ class LogprobEntropyCUDATest(unittest.TestCase):
         ref_lp, ref_ent = LE.compute_logprob_and_entropy(logits, token_ids, impl="torch")
         lp, ent         = LE.compute_logprob_and_entropy(logits, token_ids, impl="triton")
         torch.testing.assert_close(lp,  ref_lp,  rtol=2e-3, atol=2e-3)
+        torch.testing.assert_close(ent, ref_ent, rtol=2e-3, atol=2e-3)
+
+    def test_actor_like_2d_inputs(self):
+        N, V = 4096, 4096
+        logits = torch.randn(N, V, device="cuda")
+        token_ids = torch.randint(0, V, (N,), device="cuda")
+        ref_lp, ref_ent = LE.compute_logprob_and_entropy(logits, token_ids, impl="torch")
+        lp, ent = LE.compute_logprob_and_entropy(logits, token_ids, impl="triton")
+        torch.testing.assert_close(lp, ref_lp, rtol=2e-3, atol=2e-3)
         torch.testing.assert_close(ent, ref_ent, rtol=2e-3, atol=2e-3)
 
 

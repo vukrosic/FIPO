@@ -26,11 +26,12 @@ This fuses three reads through (B,T,V) into ONE — a 3x memory bandwidth
 reduction for logits, which dominates the compute at typical LLM vocab sizes.
 
 Supports float32 and bfloat16 inputs (upcast to float32 internally).
+Supports logits with shape (..., V) and token_ids with matching leading shape.
 
 Public API
 ----------
 compute_logprob_and_entropy(logits, token_ids, impl="auto")
-    -> (log_probs: (B,T) float32, entropy: (B,T) float32)
+    -> (log_probs: (...) float32, entropy: (...) float32)
 """
 
 from __future__ import annotations
@@ -64,21 +65,28 @@ def compute_logprob_and_entropy_torch(
     """Reference: log_softmax gather + entropy.  Reads logits twice.
 
     Args:
-        logits:    (B, T, V) float32 or bfloat16
-        token_ids: (B, T)    int64
+        logits:    (..., V) float32 or bfloat16
+        token_ids: (...)    int64
 
     Returns:
-        log_probs: (B, T) float32
-        entropy:   (B, T) float32
+        log_probs: (...) float32
+        entropy:   (...) float32
     """
+    if logits.ndim < 2:
+        raise ValueError(f"logits must have at least 2 dims, got shape={tuple(logits.shape)}")
+    if token_ids.shape != logits.shape[:-1]:
+        raise ValueError(
+            f"token_ids shape must match logits leading dims, got logits={tuple(logits.shape)} token_ids={tuple(token_ids.shape)}"
+        )
+
+    leading_shape = token_ids.shape
     logits_f = logits.float()
-    pd  = torch.softmax(logits_f, dim=-1)       # (B, T, V)
-    lse = torch.logsumexp(logits_f, dim=-1)     # (B, T)
-
-    log_probs = lse.unsqueeze(-1) - logits_f    # broadcast: (B, T, V)  [= -log_softmax]
-    log_probs = -(logits_f - lse.unsqueeze(-1)).gather(-1, token_ids.unsqueeze(-1)).squeeze(-1)
-
-    entropy = lse - (pd * logits_f).sum(dim=-1)  # (B, T)
+    pd = torch.softmax(logits_f, dim=-1)
+    lse = torch.logsumexp(logits_f, dim=-1)
+    log_probs = logits_f.gather(-1, token_ids.unsqueeze(-1)).squeeze(-1) - lse
+    entropy = lse - (pd * logits_f).sum(dim=-1)
+    log_probs = log_probs.reshape(leading_shape)
+    entropy = entropy.reshape(leading_shape)
     return log_probs, entropy
 
 
@@ -169,30 +177,37 @@ def compute_logprob_and_entropy_triton(
     """Single-pass fused logprob + entropy.  Reads logits once.
 
     Args:
-        logits:    (B, T, V) float32 or bfloat16, CUDA tensor
-        token_ids: (B, T)    int64 CUDA tensor
+        logits:    (..., V) float32 or bfloat16, CUDA tensor
+        token_ids: (...)    int64 CUDA tensor
 
     Returns:
-        log_probs: (B, T) float32
-        entropy:   (B, T) float32
+        log_probs: (...) float32
+        entropy:   (...) float32
     """
     if not HAVE_TRITON:
         raise RuntimeError("Triton not available.")
     if not logits.is_cuda or not token_ids.is_cuda:
         raise RuntimeError("Triton logprob+entropy requires CUDA tensors.")
+    if logits.ndim < 2:
+        raise ValueError(f"logits must have at least 2 dims, got shape={tuple(logits.shape)}")
+    if token_ids.shape != logits.shape[:-1]:
+        raise ValueError(
+            f"token_ids shape must match logits leading dims, got logits={tuple(logits.shape)} token_ids={tuple(token_ids.shape)}"
+        )
 
-    B, T, V = logits.shape
+    leading_shape = token_ids.shape
+    V = logits.shape[-1]
 
     if V > _TRITON_MAX_VOCAB:
         return compute_logprob_and_entropy_torch(logits, token_ids)
 
-    logits_2d   = logits.reshape(B * T, V).contiguous()
-    token_ids_1d = token_ids.reshape(B * T).to(torch.int32).contiguous()
+    total_tokens = token_ids.numel()
+    logits_2d = logits.reshape(total_tokens, V).contiguous()
+    token_ids_1d = token_ids.reshape(total_tokens).to(torch.int32).contiguous()
 
-    lp_out  = torch.empty(B * T, device=logits.device, dtype=torch.float32)
-    ent_out = torch.empty(B * T, device=logits.device, dtype=torch.float32)
+    lp_out = torch.empty(total_tokens, device=logits.device, dtype=torch.float32)
+    ent_out = torch.empty(total_tokens, device=logits.device, dtype=torch.float32)
 
-    total_tokens = B * T
     grid = lambda meta: (total_tokens,)
 
     _logprob_entropy_kernel[grid](
@@ -205,7 +220,7 @@ def compute_logprob_and_entropy_triton(
         logits_2d.stride(0),
     )
 
-    return lp_out.reshape(B, T), ent_out.reshape(B, T)
+    return lp_out.reshape(leading_shape), ent_out.reshape(leading_shape)
 
 
 # ---------------------------------------------------------------------------
@@ -224,13 +239,13 @@ def compute_logprob_and_entropy(
     separately.  Also avoids materialising (B,T,V) softmax/log_softmax.
 
     Args:
-        logits:    (B, T, V) float32 or bfloat16
-        token_ids: (B, T)    int64 — target token at each position
+        logits:    (..., V) float32 or bfloat16
+        token_ids: (...)    int64 — target token at each position
         impl:      "auto" | "torch" | "triton"
 
     Returns:
-        log_probs: (B, T) float32
-        entropy:   (B, T) float32
+        log_probs: (...) float32
+        entropy:   (...) float32
     """
     resolved = impl
     if resolved == "auto":

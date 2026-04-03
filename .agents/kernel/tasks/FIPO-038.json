@@ -1,20 +1,41 @@
 {
+  "schema_version": 1,
   "id": "FIPO-038",
   "title": "Fused advantage normalization (whiten + mask)",
+  "summary": "Two-pass Triton whitening helper that fuses normalization and masking for already-computed advantages.",
   "priority": "P1",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/fused_advantage_norm.py",
     "tests/test_fused_advantage_norm_kernel.py"
   ],
-  "test": "python -m pytest tests/test_fused_advantage_norm_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_fused_advantage_norm_kernel.py -v",
+    "representative_shapes": [
+      "32x2048 float32 advantage whitening"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_fused_advantage_norm_kernel.py -v"
+  },
+  "success_gate": "Preserve whiten+mask semantics and only use the fused path when it wins representative advantage-normalization shapes.",
   "results": {
     "tests_passing": 12,
     "torch_ms": 0.179,
     "triton_ms": 0.156,
     "speedup_x": 1.15,
     "note": "Reduces 3 passes to 2 (accum + apply). Used by REINFORCE++ and GRPO advantage pipelines."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

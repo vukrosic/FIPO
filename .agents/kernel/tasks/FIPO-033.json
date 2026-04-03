@@ -1,17 +1,38 @@
 {
+  "schema_version": 1,
   "id": "FIPO-033",
   "title": "Vectorized KL-Cov policy loss (avoid CPU sync)",
+  "summary": "Kept KL-Cov covariance token selection on-GPU to remove masked_select-driven synchronization.",
   "priority": "P1",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/kl_cov_loss.py",
     "tests/test_kl_cov_loss_kernel.py"
   ],
-  "test": "python -m pytest tests/test_kl_cov_loss_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_kl_cov_loss_kernel.py -v",
+    "representative_shapes": [
+      "kl-cov policy loss on representative PPO batches"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_kl_cov_loss_kernel.py -v"
+  },
+  "success_gate": "Preserve KL-Cov behavior while keeping covariance selection fully on GPU.",
   "results": {
     "tests_passing": 15,
     "note": "Replaces masked_select CPU sync with full-grid covariance + topk. Scatter via flat indexing, all GPU-side."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

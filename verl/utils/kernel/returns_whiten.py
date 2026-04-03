@@ -25,7 +25,7 @@ Pass 2 (whitening):
 Public API
 ----------
 compute_returns_and_whiten(
-    rewards, mask, gamma, shift_mean=True, impl="auto"
+    rewards, mask, gamma, shift_mean=True, impl="auto", return_returns=False
 ) -> advantages: (B, T) float32
 """
 
@@ -56,7 +56,8 @@ def compute_returns_and_whiten_torch(
     mask: torch.Tensor,
     gamma: float,
     shift_mean: bool = True,
-) -> torch.Tensor:
+    return_returns: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Reference: discounted returns then masked whiten.
 
     Args:
@@ -67,6 +68,7 @@ def compute_returns_and_whiten_torch(
 
     Returns:
         advantages: (B, T) float32
+        returns: (B, T) float32 when return_returns=True
     """
     m = mask.float()
     r = rewards.float()
@@ -83,7 +85,10 @@ def compute_returns_and_whiten_torch(
     # Masked whiten
     mask_sum = m.sum()
     if mask_sum <= 1:
-        return returns * m
+        advantages = returns * m
+        if return_returns:
+            return advantages, returns
+        return advantages
 
     mean = (returns * m).sum() / (mask_sum + 1e-8)
     centered = returns - mean
@@ -92,7 +97,10 @@ def compute_returns_and_whiten_torch(
     whitened = (returns - mean) * torch.rsqrt(var + 1e-8)
     if not shift_mean:
         whitened = whitened + mean
-    return whitened * m
+    advantages = whitened * m
+    if return_returns:
+        return advantages, returns
+    return advantages
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +221,8 @@ def compute_returns_and_whiten_triton(
     mask: torch.Tensor,
     gamma: float,
     shift_mean: bool = True,
-) -> torch.Tensor:
+    return_returns: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Fused reverse-scan + whitening (FIPO-040).
 
     Args:
@@ -223,6 +232,7 @@ def compute_returns_and_whiten_triton(
 
     Returns:
         advantages: (B, T) float32
+        returns: (B, T) float32 when return_returns=True
     """
     if not HAVE_TRITON:
         raise RuntimeError("Triton not available.")
@@ -249,7 +259,10 @@ def compute_returns_and_whiten_triton(
 
     count = count_out.item()
     if count <= 1:
-        return returns * mask_f
+        advantages = returns * mask_f
+        if return_returns:
+            return advantages, returns
+        return advantages
 
     s  = sum_out.item()
     sq = sum_sq_out.item()
@@ -270,7 +283,10 @@ def compute_returns_and_whiten_triton(
         float(mean), float(rsqrt_var), int(shift_mean),
     )
 
-    return output.reshape(B, T)
+    advantages = output.reshape(B, T)
+    if return_returns:
+        return advantages, returns
+    return advantages
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +299,8 @@ def compute_returns_and_whiten(
     gamma: float,
     shift_mean: bool = True,
     impl: ReturnsWhitenImpl = "auto",
-) -> torch.Tensor:
+    return_returns: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Discounted returns followed by advantage whitening (fused).
 
     Computes REINFORCE++ advantages in 2 GPU passes instead of 3:
@@ -299,11 +316,24 @@ def compute_returns_and_whiten(
 
     Returns:
         advantages: (B, T) float32
+        returns: (B, T) float32 when return_returns=True
     """
     resolved = impl
     if resolved == "auto":
         resolved = "triton" if HAVE_TRITON and rewards.is_cuda else "torch"
 
     if resolved == "triton":
-        return compute_returns_and_whiten_triton(rewards, mask, gamma, shift_mean)
-    return compute_returns_and_whiten_torch(rewards, mask, gamma, shift_mean)
+        return compute_returns_and_whiten_triton(
+            rewards,
+            mask,
+            gamma,
+            shift_mean,
+            return_returns=return_returns,
+        )
+    return compute_returns_and_whiten_torch(
+        rewards,
+        mask,
+        gamma,
+        shift_mean,
+        return_returns=return_returns,
+    )

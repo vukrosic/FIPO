@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import torch
 import torch.nn.functional as F
@@ -26,6 +27,20 @@ def _load_logprob_module():
 
 
 MOD = _load_logprob_module()
+
+
+def _load_torch_functional_module():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "verl" / "utils" / "torch_functional.py"
+    spec = importlib.util.spec_from_file_location("torch_functional", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+TF = _load_torch_functional_module()
 
 
 class TestTokenLogprobTorch(unittest.TestCase):
@@ -116,6 +131,17 @@ class TestTokenLogprobTorch(unittest.TestCase):
         token_ids = torch.randint(0, V, (B, T))
         expected = _ref_logprob(logits, token_ids)
         actual = MOD.compute_token_logprob(logits, token_ids, impl="auto")
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+    def test_torch_functional_dispatch_cpu(self):
+        B, T, V = 4, 8, 64
+        logits = torch.randn(B, T, V)
+        token_ids = torch.randint(0, V, (B, T))
+        expected = _ref_logprob(logits, token_ids)
+        with mock.patch.object(TF, "FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE", False), mock.patch.object(
+            TF, "NPU_CROSS_ENTROPY_LOSS_AVAILABLE", False
+        ):
+            actual = TF.logprobs_from_logits(logits, token_ids)
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
 
 
@@ -217,6 +243,36 @@ class TestTokenLogprobTriton(unittest.TestCase):
         expected = _ref_logprob(logits, token_ids)
         actual = MOD.compute_token_logprob_triton(logits, token_ids)
         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+    def test_torch_functional_dispatch_cuda_3d(self):
+        logits, token_ids = self._make(4, 16, 4096)
+        expected = _ref_logprob(logits, token_ids)
+        with mock.patch.object(TF, "FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE", False), mock.patch.object(
+            TF, "NPU_CROSS_ENTROPY_LOSS_AVAILABLE", False
+        ):
+            actual = TF.logprobs_from_logits(logits, token_ids)
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+    def test_torch_functional_dispatch_cuda_2d(self):
+        N, V = 4096, 4096
+        logits = torch.randn(N, V, device="cuda")
+        token_ids = torch.randint(0, V, (N,), device="cuda")
+        expected = _ref_logprob(logits.unsqueeze(0), token_ids.unsqueeze(0)).squeeze(0)
+        with mock.patch.object(TF, "FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE", False), mock.patch.object(
+            TF, "NPU_CROSS_ENTROPY_LOSS_AVAILABLE", False
+        ):
+            actual = TF.logprobs_from_logits(logits, token_ids)
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+    def test_torch_functional_dispatch_cuda_bfloat16(self):
+        logits, token_ids = self._make(4, 16, 4096, dtype=torch.bfloat16)
+        expected = TF.logprobs_from_logits_v2(logits, token_ids)
+        with mock.patch.object(TF, "FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE", False), mock.patch.object(
+            TF, "NPU_CROSS_ENTROPY_LOSS_AVAILABLE", False
+        ):
+            actual = TF.logprobs_from_logits(logits, token_ids)
+        self.assertEqual(actual.dtype, logits.dtype)
+        torch.testing.assert_close(actual.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,41 @@
 {
+  "schema_version": 1,
   "id": "FIPO-034",
   "title": "Fused agg_loss Triton kernel (all 4 modes)",
+  "summary": "Sequence-wise Triton aggregation helper for all PPO loss aggregation modes.",
   "priority": "P1",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/agg_loss.py",
     "tests/test_agg_loss_kernel.py"
   ],
-  "test": "python -m pytest tests/test_agg_loss_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_agg_loss_kernel.py -v",
+    "representative_shapes": [
+      "token-mean",
+      "seq-mean-token-sum",
+      "seq-mean-token-mean",
+      "seq-mean-token-sum-norm"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_agg_loss_kernel.py -v"
+  },
+  "success_gate": "Support all aggregation modes with parity and fewer launches than the unfused reduction path.",
   "results": {
     "tests_passing": 10,
     "note": "Single-pass per sequence, B programs. Supports token-mean, seq-mean-token-sum, seq-mean-token-mean, seq-mean-token-sum-norm."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

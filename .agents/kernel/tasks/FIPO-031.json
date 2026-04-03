@@ -1,17 +1,38 @@
 {
+  "schema_version": 1,
   "id": "FIPO-031",
   "title": "Vectorized Clip-Cov policy loss (avoid CPU sync)",
+  "summary": "Moved Clip-Cov token selection fully onto the GPU to remove torch.nonzero and randperm synchronization points.",
   "priority": "P1",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/clip_cov_loss.py",
     "tests/test_clip_cov_loss_kernel.py"
   ],
-  "test": "python -m pytest tests/test_clip_cov_loss_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_clip_cov_loss_kernel.py -v",
+    "representative_shapes": [
+      "clip-cov policy loss on representative PPO batches"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_clip_cov_loss_kernel.py -v"
+  },
+  "success_gate": "Keep Clip-Cov selection semantics on CUDA while removing avoidable CPU synchronization.",
   "results": {
     "tests_passing": 14,
     "note": "Replaces torch.nonzero+randperm (CPU sync) with GPU-side topk on random priorities. Covariance band selection stays fully on GPU."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

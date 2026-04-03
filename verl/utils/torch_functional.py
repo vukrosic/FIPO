@@ -95,6 +95,19 @@ def logprobs_from_logits(logits, labels, inplace_backward=True):
         output = output.view(*batch_dim)
     elif NPU_CROSS_ENTROPY_LOSS_AVAILABLE:
         output = logprobs_from_logits_torch_npu(logits, labels)
+    elif logits.is_cuda:
+        from verl.utils.kernel.logprob import compute_token_logprob
+
+        if logits.dim() == 2:
+            output = compute_token_logprob(
+                logits.unsqueeze(0),
+                labels.unsqueeze(0),
+                impl="auto",
+            ).squeeze(0)
+        else:
+            output = compute_token_logprob(logits, labels, impl="auto")
+        if logits.dtype in {torch.float16, torch.bfloat16}:
+            output = output.to(logits.dtype)
     else:
         output = logprobs_from_logits_v2(logits, labels)
     return output

@@ -74,6 +74,9 @@ loss_agg_mode: token-mean
 # Entropy regularization coefficient in PPO loss
 entropy_coeff: 0
 
+# Backend for fused logprob+entropy when entropy is requested. Options: auto / torch / triton
+logprob_entropy_impl: auto
+
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false
 

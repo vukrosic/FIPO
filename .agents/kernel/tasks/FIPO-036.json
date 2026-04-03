@@ -1,17 +1,38 @@
 {
+  "schema_version": 1,
   "id": "FIPO-036",
   "title": "Fused GPG policy loss Triton kernel",
+  "summary": "Fused GPG policy loss helper that avoids materializing the intermediate token-loss tensor.",
   "priority": "P2",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/fused_gpg_loss.py",
     "tests/test_gpg_loss_kernel.py"
   ],
-  "test": "python -m pytest tests/test_gpg_loss_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_gpg_loss_kernel.py -v",
+    "representative_shapes": [
+      "gpg loss on representative PPO batches"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_gpg_loss_kernel.py -v"
+  },
+  "success_gate": "Preserve GPG loss semantics and only use the fused path when it avoids the intermediate loss materialization safely.",
   "results": {
     "tests_passing": 11,
     "note": "Fuses -log_prob * advantages + agg_loss into single kernel. No intermediate (B,T) tensor. Supports all 4 aggregation modes."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

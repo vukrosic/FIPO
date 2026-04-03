@@ -1,17 +1,38 @@
 {
+  "schema_version": 1,
   "id": "FIPO-035",
   "title": "Fused batch statistics Triton kernel (mean/max/min)",
+  "summary": "Single-pass batch-statistics helpers for mean, max, and min, including masked variants used in data metrics.",
   "priority": "P2",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/batch_stats.py",
     "tests/test_batch_stats_kernel.py"
   ],
-  "test": "python -m pytest tests/test_batch_stats_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_batch_stats_kernel.py -v",
+    "representative_shapes": [
+      "masked and unmasked compute_data_metrics batches"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_batch_stats_kernel.py -v"
+  },
+  "success_gate": "Match the plain torch statistics helpers while reducing the number of kernel launches.",
   "results": {
     "tests_passing": 13,
     "note": "Single-pass mean/max/min with atomic_add/max/min. Supports masked variant. Reduces 3 kernel launches to 1 for compute_data_metrics."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

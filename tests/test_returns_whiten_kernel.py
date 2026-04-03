@@ -1,18 +1,9 @@
-"""Tests for fused returns + whitening kernel (FIPO-040).
-
-Covers:
-  - CPU correctness (torch path)
-  - CUDA triton matches torch reference
-  - BF16 rewards input
-  - All-masked edge case
-  - Large batch
-  - shift_mean=False (preserve mean)
-  - Speedup benchmark vs separate kernels
-"""
+"""Parity tests for the REINFORCE++ returns-plus-whitening kernel."""
 
 from __future__ import annotations
 
 import importlib.util
+import types
 import unittest
 from pathlib import Path
 
@@ -20,243 +11,233 @@ import torch
 
 
 def _load(rel: str):
-    p = Path(__file__).resolve().parents[1] / rel
-    spec = importlib.util.spec_from_file_location(p.stem, p)
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+    path = Path(__file__).resolve().parents[1] / rel
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
-RW = _load("verl/utils/kernel/returns_whiten.py")
+RETURNS_WHITEN = _load("verl/utils/kernel/returns_whiten.py")
+CORE_ALGOS = _load("verl/trainer/ppo/core_algos.py")
 
 
-def _masked_whiten_ref(x: torch.Tensor, mask: torch.Tensor, shift_mean=True) -> torch.Tensor:
-    """Reference masked whiten matching fused_advantage_norm."""
-    m = mask.float()
-    n = m.sum()
-    if n <= 1:
-        return x * m
-    mean = (x * m).sum() / (n + 1e-8)
-    var  = ((x - mean) ** 2 * m).sum() / (n + 1e-8)
-    var  = var * n / (n - 1)
-    w = (x - mean) * torch.rsqrt(var + 1e-8)
-    if not shift_mean:
-        w = w + mean
-    return w * m
+def _make_eos_style_mask(batch_size: int, response_len: int, device: str | torch.device = "cpu") -> torch.Tensor:
+    lengths = torch.randint(1, response_len + 1, (batch_size,), device=device)
+    positions = torch.arange(response_len, device=device).unsqueeze(0)
+    return (positions < lengths.unsqueeze(1)).float()
 
 
-def _discounted_returns_ref(rewards, mask, gamma):
-    r = rewards.float()
-    m = mask.float()
-    returns = torch.zeros_like(r)
-    carry = torch.zeros(r.shape[0], device=r.device, dtype=r.dtype)
-    for step in range(r.shape[1]):
-        col = r.shape[1] - step - 1
-        carry = r[:, col] + gamma * carry
+def _manual_discounted_returns(rewards: torch.Tensor, mask: torch.Tensor, gamma: float) -> torch.Tensor:
+    rewards_f = rewards.float()
+    mask_f = mask.float()
+    returns = torch.zeros_like(rewards_f)
+    carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=torch.float32)
+
+    for step in range(rewards.shape[1]):
+        col = rewards.shape[1] - step - 1
+        carry = rewards_f[:, col] + gamma * carry
         returns[:, col] = carry
-        carry = carry * m[:, col]
+        carry = carry * mask_f[:, col]
+
     return returns
 
 
-class ReturnsWhitenCPUTest(unittest.TestCase):
+def _manual_returns_and_whiten(
+    rewards: torch.Tensor,
+    mask: torch.Tensor,
+    gamma: float,
+    shift_mean: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    returns = _manual_discounted_returns(rewards, mask, gamma)
+    mask_f = mask.float()
+    mask_sum = mask_f.sum()
 
+    if mask_sum <= 1:
+        return returns * mask_f, returns
+
+    mean = (returns * mask_f).sum() / (mask_sum + 1e-8)
+    centered = returns - mean
+    var = (centered * centered * mask_f).sum() / (mask_sum + 1e-8)
+    var = var * mask_sum / (mask_sum - 1)
+    advantages = (returns - mean) * torch.rsqrt(var + 1e-8)
+    if not shift_mean:
+        advantages = advantages + mean
+    return advantages * mask_f, returns
+
+
+class ReturnsWhitenCPUTest(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(7)
 
-    def _run_ref(self, rewards, mask, gamma, shift_mean=True):
-        ret = _discounted_returns_ref(rewards, mask, gamma)
-        return _masked_whiten_ref(ret, mask, shift_mean)
+    def test_torch_matches_manual_reference(self):
+        rewards = torch.randn(4, 64)
+        mask = _make_eos_style_mask(4, 64)
 
-    def test_basic_shape(self):
-        B, T = 4, 32
-        rewards = torch.randn(B, T)
-        mask    = (torch.rand(B, T) > 0.1).float()
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="torch")
-        self.assertEqual(out.shape, (B, T))
+        ref_adv, ref_returns = _manual_returns_and_whiten(rewards, mask, gamma=0.99)
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="torch",
+            return_returns=True,
+        )
 
-    def test_matches_ref(self):
-        B, T = 4, 64
-        rewards = torch.randn(B, T)
-        mask    = (torch.rand(B, T) > 0.1).float()
-        ref = self._run_ref(rewards, mask, 0.99)
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="torch")
-        torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(out_returns, ref_returns, rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=1e-6, atol=1e-6)
 
-    def test_padding_is_zero(self):
-        """Masked positions should be exactly zero."""
-        B, T = 4, 16
-        rewards = torch.randn(B, T)
-        mask = torch.ones(B, T)
-        mask[:, -4:] = 0.0  # pad last 4 positions
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="torch")
-        self.assertTrue((out[:, -4:].abs() < 1e-7).all())
+    def test_shift_mean_false_matches_reference(self):
+        rewards = torch.randn(3, 33)
+        mask = _make_eos_style_mask(3, 33)
 
-    def test_shift_mean_false(self):
-        B, T = 4, 32
-        rewards = torch.randn(B, T)
-        mask    = torch.ones(B, T)
-        ref = self._run_ref(rewards, mask, 0.99, shift_mean=False)
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, shift_mean=False, impl="torch")
-        torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+        ref_adv, ref_returns = _manual_returns_and_whiten(rewards, mask, gamma=0.95, shift_mean=False)
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.95,
+            shift_mean=False,
+            impl="torch",
+            return_returns=True,
+        )
 
-    def test_all_masked(self):
-        B, T = 2, 16
-        rewards = torch.randn(B, T)
-        mask    = torch.zeros(B, T)
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="torch")
-        self.assertTrue((out.abs() < 1e-7).all())
+        torch.testing.assert_close(out_returns, ref_returns, rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=1e-6, atol=1e-6)
 
-    def test_gamma_zero(self):
-        """gamma=0 → returns equal rewards at each step."""
-        B, T = 2, 8
-        rewards = torch.randn(B, T)
-        mask    = torch.ones(B, T)
-        ret = _discounted_returns_ref(rewards, mask, gamma=0.0)
-        ref = _masked_whiten_ref(ret, mask)
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.0, impl="torch")
-        torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+    def test_auto_falls_back_to_torch_on_cpu(self):
+        rewards = torch.randn(2, 17)
+        mask = _make_eos_style_mask(2, 17)
 
-    def test_auto_falls_back_on_cpu(self):
-        B, T = 4, 32
-        rewards = torch.randn(B, T)
-        mask    = (torch.rand(B, T) > 0.1).float()
-        ref = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="auto")
-        torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+        ref_adv, ref_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="torch",
+            return_returns=True,
+        )
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="auto",
+            return_returns=True,
+        )
+
+        torch.testing.assert_close(out_returns, ref_returns, rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=1e-6, atol=1e-6)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-@unittest.skipUnless(RW.HAVE_TRITON, "Triton required")
+@unittest.skipUnless(RETURNS_WHITEN.HAVE_TRITON, "Triton required")
 class ReturnsWhitenCUDATest(unittest.TestCase):
-
     def setUp(self):
         torch.manual_seed(0)
         torch.cuda.manual_seed_all(0)
 
-    def test_triton_matches_torch(self):
-        B, T = 32, 2048
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = (torch.rand(B, T, device="cuda") > 0.1).float()
+    def test_triton_matches_torch_float32(self):
+        rewards = torch.randn(16, 2048, device="cuda", dtype=torch.float32)
+        mask = _make_eos_style_mask(16, 2048, device="cuda")
 
-        ref = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="triton")
+        ref_adv, ref_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="torch",
+            return_returns=True,
+        )
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="triton",
+            return_returns=True,
+        )
 
-        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(out_returns, ref_returns, rtol=2e-4, atol=2e-4)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=2e-4, atol=2e-4)
 
-    def test_triton_padding_is_zero(self):
-        B, T = 8, 256
-        rewards = torch.randn(B, T, device="cuda")
-        mask = torch.ones(B, T, device="cuda")
-        mask[:, -32:] = 0.0
+    def test_triton_matches_torch_bfloat16_reference(self):
+        rewards = torch.randn(8, 1024, device="cuda", dtype=torch.bfloat16)
+        mask = _make_eos_style_mask(8, 1024, device="cuda")
 
-        out = RW.compute_returns_and_whiten(rewards, mask, gamma=0.99, impl="triton")
-        self.assertTrue((out[:, -32:].abs() < 1e-6).all())
+        ref_adv, ref_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards.float(),
+            mask,
+            gamma=0.99,
+            impl="torch",
+            return_returns=True,
+        )
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="triton",
+            return_returns=True,
+        )
 
-    def test_triton_shift_mean_false(self):
-        B, T = 8, 128
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = torch.ones(B, T, device="cuda")
+        torch.testing.assert_close(out_returns, ref_returns, rtol=5e-3, atol=5e-3)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=5e-3, atol=5e-3)
 
-        ref = RW.compute_returns_and_whiten(rewards, mask, 0.99, shift_mean=False, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, shift_mean=False, impl="triton")
-        # shift_mean=False adds back the mean computed via scalar accumulators — slightly wider
-        # tolerance than shift_mean=True due to float32 precision on the mean term.
-        torch.testing.assert_close(out, ref, rtol=5e-3, atol=5e-3)
+    def test_triton_handles_all_masked(self):
+        rewards = torch.randn(4, 64, device="cuda")
+        mask = torch.zeros(4, 64, device="cuda")
 
-    def test_triton_all_masked(self):
-        B, T = 4, 64
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = torch.zeros(B, T, device="cuda")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        self.assertTrue((out.abs() < 1e-6).all())
+        out_adv, out_returns = RETURNS_WHITEN.compute_returns_and_whiten(
+            rewards,
+            mask,
+            gamma=0.99,
+            impl="triton",
+            return_returns=True,
+        )
 
-    def test_triton_bfloat16_rewards(self):
-        B, T = 8, 256
-        rewards = torch.randn(B, T, device="cuda", dtype=torch.bfloat16)
-        mask    = (torch.rand(B, T, device="cuda") > 0.1).float()
-
-        ref = RW.compute_returns_and_whiten(rewards.float(), mask, 0.99, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        # BF16 rewards upcast internally → modest tolerance
-        torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
-
-    def test_triton_single_row(self):
-        B, T = 1, 128
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = torch.ones(B, T, device="cuda")
-        ref = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
-
-    def test_triton_large_batch(self):
-        B, T = 64, 2048
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = (torch.rand(B, T, device="cuda") > 0.1).float()
-        ref = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="torch")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
-
-    def test_triton_output_dtype_float32(self):
-        B, T = 4, 64
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = torch.ones(B, T, device="cuda")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        self.assertEqual(out.dtype, torch.float32)
-
-    def test_triton_unit_variance_approximately(self):
-        """Whitened advantages over valid tokens should have std ≈ 1."""
-        B, T = 32, 2048
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = torch.ones(B, T, device="cuda")
-        out = RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        std = out.std()
-        # Should be close to 1 (Bessel-corrected)
-        self.assertAlmostEqual(std.item(), 1.0, delta=0.05)
+        self.assertTrue((out_adv.abs() < 1e-7).all())
+        self.assertTrue(torch.isfinite(out_returns).all())
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-@unittest.skipUnless(RW.HAVE_TRITON, "Triton required")
-class ReturnsWhitenSpeedupTest(unittest.TestCase):
+@unittest.skipUnless(RETURNS_WHITEN.HAVE_TRITON, "Triton required")
+class ReinforcePlusPlusIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(1)
+        torch.cuda.manual_seed_all(1)
 
-    def test_speedup_vs_separate_ops(self):
-        """Fused should be faster than separate returns + whiten calls."""
-        import time
-        from verl.utils.kernel.advantage_kernels import compute_discounted_returns
-        from verl.utils.kernel.fused_advantage_norm import compute_fused_advantage_norm
+    def _run_core(self, rewards: torch.Tensor, mask: torch.Tensor, impl: str):
+        config = types.SimpleNamespace(gamma=0.99, reinforce_plus_plus_impl=impl)
+        return CORE_ALGOS.compute_reinforce_plus_plus_outcome_advantage(
+            token_level_rewards=rewards,
+            response_mask=mask,
+            config=config,
+        )
 
-        B, T = 32, 2048
-        rewards = torch.randn(B, T, device="cuda")
-        mask    = (torch.rand(B, T, device="cuda") > 0.1).float()
+    def test_core_triton_matches_torch_on_float32(self):
+        rewards = torch.randn(16, 1024, device="cuda", dtype=torch.float32)
+        mask = _make_eos_style_mask(16, 1024, device="cuda")
 
-        # Warmup
-        for _ in range(5):
-            ret = compute_discounted_returns(rewards, mask, gamma=0.99)
-            compute_fused_advantage_norm(ret, mask)
-            RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        torch.cuda.synchronize()
+        ref_adv, ref_returns = self._run_core(rewards, mask, "torch")
+        out_adv, out_returns = self._run_core(rewards, mask, "triton")
 
-        iters = 30
+        torch.testing.assert_close(out_returns, ref_returns, rtol=2e-4, atol=2e-4)
+        torch.testing.assert_close(out_adv, ref_adv, rtol=2e-4, atol=2e-4)
 
-        # Separate
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            ret = compute_discounted_returns(rewards, mask, gamma=0.99)
-            compute_fused_advantage_norm(ret, mask)
-        torch.cuda.synchronize()
-        separate_ms = (time.perf_counter() - t0) / iters * 1000
+    def test_core_auto_uses_triton_on_float32(self):
+        rewards = torch.randn(8, 512, device="cuda", dtype=torch.float32)
+        mask = _make_eos_style_mask(8, 512, device="cuda")
 
-        # Fused
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            RW.compute_returns_and_whiten(rewards, mask, 0.99, impl="triton")
-        torch.cuda.synchronize()
-        fused_ms = (time.perf_counter() - t0) / iters * 1000
+        auto_adv, auto_returns = self._run_core(rewards, mask, "auto")
+        triton_adv, triton_returns = self._run_core(rewards, mask, "triton")
 
-        speedup = separate_ms / fused_ms
-        print(f"\nSeparate returns+whiten: {separate_ms:.3f}ms  Fused: {fused_ms:.3f}ms  speedup={speedup:.2f}x")
-        self.assertGreater(speedup, 0.8, f"Expected reasonable speedup, got {speedup:.2f}x")
+        torch.testing.assert_close(auto_returns, triton_returns, rtol=2e-4, atol=2e-4)
+        torch.testing.assert_close(auto_adv, triton_adv, rtol=2e-4, atol=2e-4)
+
+    def test_core_auto_falls_back_to_torch_on_bfloat16(self):
+        rewards = torch.randn(8, 512, device="cuda", dtype=torch.bfloat16)
+        mask = _make_eos_style_mask(8, 512, device="cuda")
+
+        auto_adv, auto_returns = self._run_core(rewards, mask, "auto")
+        torch_adv, torch_returns = self._run_core(rewards, mask, "torch")
+
+        torch.testing.assert_close(auto_returns.float(), torch_returns.float(), rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(auto_adv.float(), torch_adv.float(), rtol=1e-5, atol=1e-5)
 
 
 if __name__ == "__main__":

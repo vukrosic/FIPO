@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-041",
+  "title": "DP actor fused logprob plus entropy path",
+  "summary": "Integrate the fused logprob_entropy Triton helper into the DP actor path behind an auto|torch|triton switch, with benchmark and parity coverage for padded and remove-padding flows.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "codex",
+  "claimed_utc": "2026-04-03T06:20:56Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T06:25:32Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/logprob_entropy.py",
+    "verl/workers/actor/dp_actor.py",
+    "verl/workers/config/actor.py",
+    "verl/workers/config/actor_check.py",
+    "verl/trainer/config/actor/actor.yaml",
+    "verl/trainer/config/_generated_ppo_trainer.yaml",
+    "verl/trainer/config/_generated_ppo_megatron_trainer.yaml",
+    "scripts/benchmark_logprob_entropy.py",
+    "tests/test_logprob_entropy_kernel.py"
+  ],
+  "depends_on": [
+    "FIPO-026",
+    "FIPO-039"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_logprob_entropy.py --batch-size 16 --seq-len 2048 --vocab-size 8192 --dtype float32 --warmup 5 --iters 20",
+    "representative_shapes": [
+      "16x2048x8192 float32 padded actor path",
+      "1x32768x8192 float32 remove-padding actor path",
+      "16x2048x8192 bfloat16-input float32-compute"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_logprob_entropy_kernel -v"
+  },
+  "success_gate": "Match separate logprob and entropy outputs and beat the combined baseline on representative DP actor shapes before integrating into the actor path.",
+  "results": {
+    "padded_16x2048x8192_float32_separate_ms": 10.776,
+    "padded_16x2048x8192_float32_fused_ms": 4.75,
+    "padded_16x2048x8192_float32_speedup_x": 2.27,
+    "rmpad_32768x8192_float32_separate_ms": 5.09,
+    "rmpad_32768x8192_float32_fused_ms": 2.557,
+    "rmpad_32768x8192_float32_speedup_x": 1.99,
+    "padded_16x2048x8192_bfloat16_separate_ms": 5.118,
+    "padded_16x2048x8192_bfloat16_fused_ms": 2.75,
+    "padded_16x2048x8192_bfloat16_speedup_x": 1.86,
+    "rmpad_32768x8192_bfloat16_separate_ms": 5.438,
+    "rmpad_32768x8192_bfloat16_fused_ms": 2.739,
+    "rmpad_32768x8192_bfloat16_speedup_x": 1.99,
+    "integration": "DP actor now uses compute_logprob_and_entropy when entropy is requested, fused kernels are disabled, and entropy checkpointing is off; auto delegates to Triton on CUDA and torch elsewhere."
+  },
+  "notes": [
+    "Fixed the fused helper's torch reference sign error and generalized the helper to actor-style 2D logits as well as standard 3D inputs.",
+    "Validated with python -m unittest tests.test_logprob_entropy_kernel -v and python -m py_compile verl/workers/actor/dp_actor.py scripts/benchmark_logprob_entropy.py verl/utils/kernel/logprob_entropy.py."
+  ]
+}

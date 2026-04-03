@@ -1,20 +1,41 @@
 {
+  "schema_version": 1,
   "id": "FIPO-037",
   "title": "Fused ratio + KL computation kernel",
+  "summary": "Standalone fused ratio and negative-KL helper evaluated as a building block for larger PPO kernels.",
   "priority": "P2",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/fused_ratio.py",
     "tests/test_fused_ratio_kernel.py"
   ],
-  "test": "python -m pytest tests/test_fused_ratio_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m pytest tests/test_fused_ratio_kernel.py -v",
+    "representative_shapes": [
+      "sub-millisecond ratio and KL helper workload"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_fused_ratio_kernel.py -v"
+  },
+  "success_gate": "Keep the helper experimental unless it wins either standalone or as a component of a larger fused kernel.",
   "results": {
     "tests_passing": 13,
     "torch_ms": 0.076,
     "triton_ms": 0.102,
     "speedup_x": 0.74,
     "note": "Standalone is slower due to Triton launch overhead at sub-0.1ms. Value is as building block for larger fused kernels."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

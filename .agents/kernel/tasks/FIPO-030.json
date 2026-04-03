@@ -1,17 +1,40 @@
 {
+  "schema_version": 1,
   "id": "FIPO-030",
   "title": "Fused GMPO (Geo-Mean) policy loss Triton kernel",
+  "summary": "Single-pass sequence-level Triton kernel for GMPO policy loss accumulation and clipping metrics.",
   "priority": "P1",
   "status": "completed",
   "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T00:00:00Z",
   "kind": "kernel",
-  "files": [
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
     "verl/utils/kernel/gmpo_loss.py",
+    "scripts/benchmark_gmpo_loss.py",
     "tests/test_gmpo_loss_kernel.py"
   ],
-  "test": "python -m pytest tests/test_gmpo_loss_kernel.py -v",
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_gmpo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "32x2048 float32",
+      "32x2048 bfloat16-input float32-compute"
+    ]
+  },
+  "tests": {
+    "command": "python -m pytest tests/test_gmpo_loss_kernel.py -v"
+  },
+  "success_gate": "Preserve GMPO sequence semantics while reducing full-pass runtime on representative PPO shapes.",
   "results": {
     "tests_passing": 16,
     "note": "Single-pass Triton kernel per sequence: accumulates neg_kl_min_sum, adv_sum, mask_sum, clip counts in one scan. Computes ratio=exp(neg_kl_min_sum/mask_sum) then loss=-adv_mean*ratio. Same GSPO pattern (FIPO-029)."
-  }
+  },
+  "notes": [
+    "Normalized from the legacy task-card schema on 2026-04-03 to restore queue validation."
+  ]
 }

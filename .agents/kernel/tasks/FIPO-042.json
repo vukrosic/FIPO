@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-042",
+  "title": "General logprobs_from_logits Triton dispatch",
+  "summary": "Route CUDA fallback logprobs_from_logits calls through the gathered-logprob Triton helper when flash-attn cross-entropy is unavailable, with dispatcher coverage and benchmark data.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "codex",
+  "claimed_utc": "2026-04-03T06:27:18Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T06:30:32Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/torch_functional.py",
+    "scripts/benchmark_logprobs_dispatch.py",
+    "tests/test_logprob_kernel.py"
+  ],
+  "depends_on": [
+    "FIPO-026"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_logprobs_dispatch.py --batch-size 16 --seq-len 2048 --vocab-size 8192 --dtype float32 --warmup 5 --iters 20",
+    "representative_shapes": [
+      "16x2048x8192 float32",
+      "16x2048x8192 bfloat16",
+      "1x32768x8192 float32 remove-padding style"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_logprob_kernel -v"
+  },
+  "success_gate": "Preserve logprobs_from_logits semantics and beat the existing v2 fallback on representative CUDA shapes before changing the default dispatcher.",
+  "results": {
+    "padded_16x2048x8192_float32_v2_ms": 19.08,
+    "padded_16x2048x8192_float32_dispatch_ms": 2.563,
+    "padded_16x2048x8192_float32_speedup_x": 7.45,
+    "rmpad_32768x8192_float32_v2_ms": 15.849,
+    "rmpad_32768x8192_float32_dispatch_ms": 2.56,
+    "rmpad_32768x8192_float32_speedup_x": 6.19,
+    "padded_16x2048x8192_bfloat16_v2_ms": 5.857,
+    "padded_16x2048x8192_bfloat16_dispatch_ms": 2.93,
+    "padded_16x2048x8192_bfloat16_speedup_x": 2.0,
+    "rmpad_32768x8192_bfloat16_v2_ms": 5.8,
+    "rmpad_32768x8192_bfloat16_dispatch_ms": 3.875,
+    "rmpad_32768x8192_bfloat16_speedup_x": 1.5,
+    "note": "CUDA logprobs_from_logits now routes through the gathered-logprob Triton helper when flash-attn and NPU fast paths are unavailable, including 2D remove-padding style inputs while preserving low-precision output dtype semantics."
+  },
+  "notes": [
+    "Validated with python -m unittest tests.test_logprob_kernel -v.",
+    "Syntax checked with python -m py_compile verl/utils/torch_functional.py scripts/benchmark_logprobs_dispatch.py."
+  ]
+}

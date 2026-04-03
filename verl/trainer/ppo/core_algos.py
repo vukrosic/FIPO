@@ -33,6 +33,7 @@ from verl.trainer.config import AlgoConfig
 from verl.utils.import_utils import deprecated
 from verl.utils.kernel.advantage_kernels import compute_discounted_returns, compute_gae_advantages_returns, compute_grpo_outcome_advantage_torch, compute_rloo_outcome_advantage_torch, compute_opo_outcome_advantage_torch, compute_gpg_outcome_advantage_torch, compute_grpo_passk_outcome_advantage_torch, compute_reinforce_plus_plus_baseline_outcome_advantage_torch
 from verl.utils.kernel.future_kl import compute_future_kl, compute_influence_weights, compute_ratio_metrics, compute_fused_ppo_loss, compute_value_loss as compute_value_loss_fused, compute_entropy_loss as compute_entropy_loss_fused
+from verl.utils.kernel.returns_whiten import compute_returns_and_whiten
 from verl.workers.config import ActorConfig
 
 PolicyLossFn = Callable[
@@ -478,15 +479,38 @@ def compute_reinforce_plus_plus_outcome_advantage(
     assert config is not None
     gamma = config.gamma
     with torch.no_grad():
-        returns = compute_discounted_returns(
-            token_level_rewards=token_level_rewards.float(),
-            response_mask=response_mask.float(),
-            gamma=float(gamma),
-            impl="auto",
-        ).to(token_level_rewards.dtype)
+        rewards_f = token_level_rewards.float()
+        response_mask_f = response_mask.float()
+        resolved_impl = getattr(config, "reinforce_plus_plus_impl", "auto")
+        if resolved_impl == "auto":
+            resolved_impl = (
+                "triton"
+                if token_level_rewards.is_cuda
+                and response_mask.is_cuda
+                and token_level_rewards.dtype == torch.float32
+                else "torch"
+            )
 
-        advantages = verl_F.masked_whiten(returns, response_mask)
-        advantages = advantages * response_mask
+        if resolved_impl == "triton":
+            advantages, returns = compute_returns_and_whiten(
+                rewards=rewards_f,
+                mask=response_mask_f,
+                gamma=float(gamma),
+                impl="triton",
+                return_returns=True,
+            )
+        elif resolved_impl == "torch":
+            returns = compute_discounted_returns(
+                token_level_rewards=rewards_f,
+                response_mask=response_mask_f,
+                gamma=float(gamma),
+                impl="auto",
+            ).to(token_level_rewards.dtype)
+
+            advantages = verl_F.masked_whiten(returns, response_mask)
+            advantages = advantages * response_mask
+        else:
+            raise ValueError(f"Unsupported REINFORCE++ implementation: {resolved_impl!r}")
 
     return advantages, returns
 

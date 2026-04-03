@@ -29,6 +29,7 @@ from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.device import get_device_name, is_cuda_available, is_npu_available
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
+from verl.utils.kernel.logprob_entropy import compute_logprob_and_entropy
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.py_functional import append_to_dict
 from verl.utils.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
@@ -71,6 +72,9 @@ class DataParallelPPOActor(BasePPOActor):
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
         if torch.distributed.get_rank() == 0:
             print(f"{role} use_fused_kernels={self.use_fused_kernels}")
+        self.logprob_entropy_impl = self.config.get("logprob_entropy_impl", "auto")
+        if torch.distributed.get_rank() == 0:
+            print(f"{role} logprob_entropy_impl={self.logprob_entropy_impl}")
 
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
@@ -191,24 +195,28 @@ class DataParallelPPOActor(BasePPOActor):
                     logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
                     logits_rmpad.div_(temperature)
 
-                    # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
-                    inplace_backward = True
-                    if calculate_entropy:
-                        inplace_backward = False
-                    log_probs = logprobs_from_logits(
-                        logits=logits_rmpad,
-                        labels=input_ids_rmpad_rolled,
-                        inplace_backward=inplace_backward,
-                    )
+                    if calculate_entropy and not self.config.entropy_checkpointing:
+                        log_probs, entropy_rmpad = compute_logprob_and_entropy(
+                            logits=logits_rmpad,
+                            token_ids=input_ids_rmpad_rolled,
+                            impl=self.logprob_entropy_impl,
+                        )
+                    else:
+                        # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
+                        inplace_backward = not calculate_entropy
+                        log_probs = logprobs_from_logits(
+                            logits=logits_rmpad,
+                            labels=input_ids_rmpad_rolled,
+                            inplace_backward=inplace_backward,
+                        )
 
-                    # compute entropy
-                    if calculate_entropy:
-                        if not self.config.entropy_checkpointing:
-                            entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)  # ((total_nnz / sp) + pad)
-                        else:
-                            entropy_rmpad = torch.utils.checkpoint.checkpoint(
-                                self.compute_entropy_from_logits, logits_rmpad
-                            )
+                        if calculate_entropy:
+                            if self.config.entropy_checkpointing:
+                                entropy_rmpad = torch.utils.checkpoint.checkpoint(
+                                    self.compute_entropy_from_logits, logits_rmpad
+                                )
+                            else:
+                                entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)
 
                 # gather log_prob if sp > 1
                 if self.use_ulysses_sp:
@@ -270,12 +278,19 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-                    log_probs = logprobs_from_logits(logits, micro_batch["responses"])
-                    if calculate_entropy:
-                        if not self.config.entropy_checkpointing:
-                            entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
-                        else:
-                            entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                    if calculate_entropy and not self.config.entropy_checkpointing:
+                        log_probs, entropy = compute_logprob_and_entropy(
+                            logits=logits,
+                            token_ids=micro_batch["responses"],
+                            impl=self.logprob_entropy_impl,
+                        )
+                    else:
+                        log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                        if calculate_entropy:
+                            if self.config.entropy_checkpointing:
+                                entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                            else:
+                                entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
 
             return entropy, log_probs
 
