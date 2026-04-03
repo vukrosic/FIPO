@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -18,10 +19,20 @@ def _load(name, rel):
 
 
 MOD = _load("gmpo_loss", "verl/utils/kernel/gmpo_loss.py")
+CORE = _load("core_algos", "verl/trainer/ppo/core_algos.py")
 
 
 def _ref(lp, olp, adv, m, low=0.2, high=0.2):
     return MOD.compute_gmpo_loss_torch(lp, olp, adv, m, low, high)
+
+
+def _cfg(impl: str):
+    return SimpleNamespace(
+        clip_ratio=0.2,
+        clip_ratio_low=0.2,
+        clip_ratio_high=0.2,
+        policy_loss=SimpleNamespace(gmpo_impl=impl),
+    )
 
 
 class TestGmpoLossTorch(unittest.TestCase):
@@ -81,6 +92,13 @@ class TestGmpoLossTorch(unittest.TestCase):
         r1 = _ref(lp, olp, adv, m)
         r2 = MOD.compute_gmpo_loss(lp, olp, adv, m, impl="torch")
         torch.testing.assert_close(r1[0], r2[0], atol=1e-5, rtol=0)
+
+    def test_core_geo_mean_torch_matches_reference(self):
+        lp, olp, adv, m = self._tensors()
+        ref = _ref(lp, olp, adv, m)
+        out = CORE.compute_policy_loss_geo_mean(olp, lp, adv, m, config=_cfg("torch"))
+        for actual, expected in zip(out, ref):
+            torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
@@ -164,6 +182,13 @@ class TestGmpoLossTriton(unittest.TestCase):
         m = torch.zeros(B, T, device="cuda")
         pg_t, _, _, _ = MOD.compute_gmpo_loss_triton(lp, olp, adv, m)
         self.assertFalse(pg_t.isnan())
+
+    def test_core_geo_mean_auto_matches_reference(self):
+        lp, olp, adv, m = self._tensors(B=16, T=512)
+        ref = MOD.compute_gmpo_loss_torch(lp, olp, adv, m)
+        out = CORE.compute_policy_loss_geo_mean(olp, lp, adv, m, config=_cfg("auto"))
+        for actual, expected in zip(out, ref):
+            torch.testing.assert_close(actual, expected, rtol=2e-3, atol=2e-3)
 
 
 if __name__ == "__main__":

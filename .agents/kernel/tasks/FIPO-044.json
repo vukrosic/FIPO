@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-044",
+  "title": "Integrate GMPO Triton kernel into geo_mean policy loss",
+  "summary": "Wire the existing GMPO fused loss helper into compute_policy_loss_geo_mean with a config switch, parity coverage, and representative end-to-end timing.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "codex",
+  "claimed_utc": "2026-04-03T06:42:55Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T06:45:26Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/trainer/ppo/core_algos.py",
+    "verl/workers/config/actor.py",
+    "verl/workers/config/actor_check.py",
+    "verl/trainer/config/actor/actor.yaml",
+    "verl/trainer/config/_generated_ppo_trainer.yaml",
+    "verl/trainer/config/_generated_ppo_megatron_trainer.yaml",
+    "tests/test_gmpo_loss_kernel.py"
+  ],
+  "depends_on": [
+    "FIPO-030"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_gmpo_loss.py --batch-size 32 --response-len 2048 --warmup 5 --iters 20",
+    "representative_shapes": [
+      "32x2048 float32",
+      "32x2048 bfloat16-input float32-compute"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_gmpo_loss_kernel -v"
+  },
+  "success_gate": "Preserve geo_mean semantics with a torch reference path and only default to the GMPO fused helper where the representative CUDA benchmark still wins.",
+  "results": {
+    "shape_32x2048_float32_torch_ms": 0.339,
+    "shape_32x2048_float32_triton_ms": 0.156,
+    "shape_32x2048_float32_speedup_x": 2.17,
+    "shape_32x2048_bfloat16_input_torch_ms": 0.377,
+    "shape_32x2048_bfloat16_input_triton_ms": 0.201,
+    "shape_32x2048_bfloat16_input_speedup_x": 1.88,
+    "note": "compute_policy_loss_geo_mean now delegates to the existing GMPO helper with policy_loss.gmpo_impl controlling auto/torch/triton selection, preserving the torch reference path while using the faster fused CUDA path by default."
+  },
+  "notes": [
+    "Validated with python -m unittest tests.test_gmpo_loss_kernel -v.",
+    "Syntax checked with python -m py_compile verl/trainer/ppo/core_algos.py verl/workers/config/actor.py verl/workers/config/actor_check.py tests/test_gmpo_loss_kernel.py."
+  ]
+}

@@ -33,6 +33,7 @@ from verl.trainer.config import AlgoConfig
 from verl.utils.import_utils import deprecated
 from verl.utils.kernel.advantage_kernels import compute_discounted_returns, compute_gae_advantages_returns, compute_grpo_outcome_advantage_torch, compute_rloo_outcome_advantage_torch, compute_opo_outcome_advantage_torch, compute_gpg_outcome_advantage_torch, compute_grpo_passk_outcome_advantage_torch, compute_reinforce_plus_plus_baseline_outcome_advantage_torch
 from verl.utils.kernel.future_kl import compute_future_kl, compute_influence_weights, compute_ratio_metrics, compute_fused_ppo_loss, compute_value_loss as compute_value_loss_fused, compute_entropy_loss as compute_entropy_loss_fused
+from verl.utils.kernel.gmpo_loss import compute_gmpo_loss
 from verl.utils.kernel.returns_whiten import compute_returns_and_whiten
 from verl.workers.config import ActorConfig
 
@@ -1339,32 +1340,16 @@ def compute_policy_loss_geo_mean(
     if cliprange_high is None:
         cliprange_high = cliprange
 
-    negative_approx_kl = log_prob - old_log_prob
-    # Clamp negative_approx_kl for stability (uncomment it if you like)
-    # negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
-    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
-
-    # Clipping at token-level & Clipping wider
-    sgn_advantage = torch.sign(advantages)
-    negative_approx_kl_clamp = torch.clamp(negative_approx_kl, -cliprange_low, cliprange_high)
-    negative_approx_kl_min = torch.min(sgn_advantage * negative_approx_kl, sgn_advantage * negative_approx_kl_clamp)
-    negative_approx_kl_min = sgn_advantage * negative_approx_kl_min
-
-    # Geometric-Mean Policy Optimization
-    response_mask_sum = response_mask.sum(dim=-1)
-    ratio = torch.exp((negative_approx_kl_min * response_mask).sum(dim=-1) / (response_mask_sum + 1e-8))
-    # we only support sequence level advantage for now,
-    # otherwise, below would be not consistent with the paper
-    advantage = (advantages * response_mask).sum(dim=-1) / (response_mask_sum + 1e-8)
-    pg_losses = -advantage * ratio
-    pg_loss = torch.mean(pg_losses)
-
-    # higher: ratio is too large that need clamp to clip_high (when adv > 0)
-    clipped = torch.ne(negative_approx_kl, negative_approx_kl_clamp)
-    pg_clipfrac = verl_F.masked_mean((clipped * (advantages > 0)).float(), response_mask)
-    pg_clipfrac_lower = verl_F.masked_mean((clipped * (advantages < 0)).float(), response_mask)
-
-    return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
+    gmpo_impl = getattr(config.policy_loss, "gmpo_impl", "auto")
+    return compute_gmpo_loss(
+        log_prob=log_prob,
+        old_log_prob=old_log_prob,
+        advantages=advantages,
+        response_mask=response_mask,
+        clip_ratio_low=float(cliprange_low),
+        clip_ratio_high=float(cliprange_high),
+        impl=gmpo_impl,
+    )
 
 
 def compute_entropy_loss(logits, response_mask, loss_agg_mode: str = "token-mean"):

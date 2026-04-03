@@ -4,11 +4,11 @@
   "title": "General entropy_from_logits Triton dispatch",
   "summary": "Route CUDA entropy_from_logits callsites through the streaming entropy kernel, including remove-padding 2D inputs, with dispatcher coverage and benchmark data.",
   "priority": "P0",
-  "status": "claimed",
+  "status": "completed",
   "owner": "codex",
   "claimed_utc": "2026-04-03T06:35:27Z",
-  "lease_expires_utc": "2026-04-03T10:35:27Z",
-  "updated_utc": "2026-04-03T06:35:27Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-03T06:38:53Z",
   "kind": "kernel",
   "resource_class": "gpu_exclusive",
   "scope_files": [
@@ -34,6 +34,24 @@
     "command": "python -m unittest tests.test_entropy_from_logits_kernel -v"
   },
   "success_gate": "Preserve entropy_from_logits semantics for CPU and low-precision outputs while beating the existing CUDA path on representative padded and remove-padding shapes.",
-  "results": null,
-  "notes": []
+  "results": {
+    "padded_16x2048x8192_float32_reference_ms": 42.334,
+    "padded_16x2048x8192_float32_dispatch_ms": 5.6,
+    "padded_16x2048x8192_float32_speedup_x": 7.56,
+    "rmpad_32768x8192_float32_reference_ms": 31.787,
+    "rmpad_32768x8192_float32_dispatch_ms": 2.543,
+    "rmpad_32768x8192_float32_speedup_x": 12.5,
+    "padded_16x2048x8192_bfloat16_reference_ms": 35.366,
+    "padded_16x2048x8192_bfloat16_dispatch_ms": 2.494,
+    "padded_16x2048x8192_bfloat16_speedup_x": 14.18,
+    "rmpad_32768x8192_bfloat16_reference_ms": 34.943,
+    "rmpad_32768x8192_bfloat16_dispatch_ms": 2.75,
+    "rmpad_32768x8192_bfloat16_speedup_x": 12.71,
+    "note": "entropy_from_logits now routes CUDA callsites through the streaming kernel for generic (..., V) inputs while preserving the legacy low-precision output dtype semantics in torch_functional."
+  },
+  "notes": [
+    "Validated with python -m unittest tests.test_entropy_from_logits_kernel -v.",
+    "Regression checked with python -m unittest tests.test_logprob_entropy_kernel -v.",
+    "Syntax checked with python -m py_compile verl/utils/kernel/entropy_from_logits.py verl/utils/torch_functional.py scripts/benchmark_entropy_dispatch.py tests/test_entropy_from_logits_kernel.py."
+  ]
 }

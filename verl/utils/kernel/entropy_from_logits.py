@@ -1,4 +1,4 @@
-"""Fused per-token entropy kernel (FIPO-039).
+"""Fused per-token entropy kernel (FIPO-039 / FIPO-043).
 
 Computes per-token entropy H(p) = logsumexp(logits) - sum(softmax(logits)*logits)
 WITHOUT materialising the full (B, T, V) softmax or log-softmax tensor.
@@ -22,9 +22,9 @@ and arbitrary vocab sizes (no upper-bound restriction).
 
 Public API
 ----------
-compute_entropy_from_logits(logits, impl="auto") -> (B, T) float32
-  logits : (B, T, V) float32 or bfloat16
-  returns: (B, T)    float32  per-token Shannon entropy in nats
+compute_entropy_from_logits(logits, impl="auto") -> (...,) float32
+  logits : (..., V) float32 or bfloat16
+  returns: (...)    float32  per-token Shannon entropy in nats
 """
 
 from __future__ import annotations
@@ -55,11 +55,13 @@ def compute_entropy_from_logits_torch(logits: torch.Tensor) -> torch.Tensor:
     """Per-token entropy via softmax (reference implementation).
 
     Args:
-        logits: (B, T, V) float32 or bfloat16
+        logits: (..., V) float32 or bfloat16
 
     Returns:
-        entropy: (B, T) float32
+        entropy: (...) float32
     """
+    if logits.dim() < 2:
+        raise ValueError(f"Expected logits with at least 2 dims, got shape {tuple(logits.shape)}")
     logits_f = logits.float()
     pd = torch.softmax(logits_f, dim=-1)              # (B, T, V)
     lse = torch.logsumexp(logits_f, dim=-1)           # (B, T)
@@ -145,26 +147,29 @@ def compute_entropy_from_logits_triton(logits: torch.Tensor) -> torch.Tensor:
     """Streaming Triton entropy kernel — no (B,T,V) materialisation.
 
     Args:
-        logits: (B, T, V) float32 or bfloat16, CUDA tensor
+        logits: (..., V) float32 or bfloat16, CUDA tensor
 
     Returns:
-        entropy: (B, T) float32 CUDA tensor
+        entropy: (...) float32 CUDA tensor
     """
     if not HAVE_TRITON:
         raise RuntimeError("Triton is not installed.")
     if not logits.is_cuda:
         raise RuntimeError("Triton entropy requires CUDA tensors.")
+    if logits.dim() < 2:
+        raise ValueError(f"Expected logits with at least 2 dims, got shape {tuple(logits.shape)}")
 
-    B, T, V = logits.shape
+    leading_shape = logits.shape[:-1]
+    V = logits.shape[-1]
 
     if V > _TRITON_MAX_VOCAB:
         return compute_entropy_from_logits_torch(logits)
 
-    # Flatten to (B*T, V)
-    logits_2d = logits.reshape(B * T, V).contiguous()
-    output_1d = torch.empty(B * T, device=logits.device, dtype=torch.float32)
+    # Flatten leading dims to (total_tokens, V).
+    logits_2d = logits.reshape(-1, V).contiguous()
+    output_1d = torch.empty(logits_2d.shape[0], device=logits.device, dtype=torch.float32)
 
-    total_tokens = B * T
+    total_tokens = logits_2d.shape[0]
     grid = lambda meta: (total_tokens,)
 
     _entropy_streaming_kernel[grid](
@@ -176,7 +181,7 @@ def compute_entropy_from_logits_triton(logits: torch.Tensor) -> torch.Tensor:
         output_1d.stride(0),
     )
 
-    return output_1d.reshape(B, T)
+    return output_1d.reshape(*leading_shape)
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +198,11 @@ def compute_entropy_from_logits(
     single-pass streaming accumulation over the vocab dimension.
 
     Args:
-        logits: (B, T, V) float32 or bfloat16
+        logits: (..., V) float32 or bfloat16
         impl:   "auto" | "torch" | "triton"
 
     Returns:
-        entropy: (B, T) float32
+        entropy: (...) float32
     """
     resolved = impl
     if resolved == "auto":

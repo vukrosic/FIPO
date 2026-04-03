@@ -39,6 +39,7 @@ class PolicyLossConfig(BaseConfig):
         clip_cov_ub (float): Upper bound for clip-cov loss.
         kl_cov_ratio (float): Ratio of tokens to be applied KL penalty for kl-cov loss.
         ppo_kl_coef (float): KL divergence penalty coefficient.
+        gmpo_impl (str): Backend for the fused GMPO helper in the geo_mean policy-loss path.
     """
 
     loss_mode: str = "vanilla"
@@ -54,6 +55,7 @@ class PolicyLossConfig(BaseConfig):
     # future_kl_clip_high_only: bool = False
     # future_kl_use_log_prob_sum: bool = False
     future_kl_impl: str = "auto"
+    gmpo_impl: str = "auto"
     future_kl_filter_extreme: bool = False
 
 

@@ -53,6 +53,11 @@ try:
 except ImportError:
     NPU_CROSS_ENTROPY_LOSS_AVAILABLE = False
 
+try:
+    from verl.utils.kernel.entropy_from_logits import compute_entropy_from_logits as _compute_entropy_from_logits_kernel
+except ImportError:
+    _compute_entropy_from_logits_kernel = None
+
 
 def gather_from_labels(data, label):
     """Gather the label from data. The value in label should be [0, vocab_size)
@@ -159,8 +164,20 @@ def clip_by_value(x, tensor_min, tensor_max):
     return clipped
 
 
+def _entropy_from_logits_cuda(logits: torch.Tensor) -> torch.Tensor:
+    if _compute_entropy_from_logits_kernel is None:
+        raise RuntimeError("entropy_from_logits kernel module is unavailable")
+
+    entropy = _compute_entropy_from_logits_kernel(logits, impl="auto")
+    if logits.dtype in {torch.float16, torch.bfloat16}:
+        entropy = entropy.to(logits.dtype)
+    return entropy
+
+
 def entropy_from_logits(logits: torch.Tensor):
     """Calculate entropy from logits."""
+    if logits.is_cuda:
+        return _entropy_from_logits_cuda(logits)
     pd = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(pd * logits, dim=-1)
     return entropy
@@ -168,6 +185,8 @@ def entropy_from_logits(logits: torch.Tensor):
 
 def entropy_from_logits_with_chunking(logits: torch.Tensor, chunk_size: int = 2048):
     """Memory-efficient entropy calculation with chunking."""
+    if logits.is_cuda:
+        return _entropy_from_logits_cuda(logits)
     entropy = torch.zeros(logits.shape[0], device=logits.device)
     for i in range(0, logits.shape[0], chunk_size):
         logits_chunk = logits[i : i + chunk_size].float()

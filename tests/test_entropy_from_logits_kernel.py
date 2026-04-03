@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 import torch
+import verl.utils.torch_functional as TORCH_F
 
 
 def _load_module(rel_path: str):
@@ -38,6 +39,12 @@ def _reference_entropy(logits: torch.Tensor) -> torch.Tensor:
     return lse - (pd * logits_f).sum(dim=-1)
 
 
+def _reference_entropy_functional(logits: torch.Tensor) -> torch.Tensor:
+    """Reference matching torch_functional.entropy_from_logits dtype semantics."""
+    pd = torch.softmax(logits, dim=-1)
+    return torch.logsumexp(logits, dim=-1) - (pd * logits).sum(dim=-1)
+
+
 class EntropyFromLogitsCPUTest(unittest.TestCase):
 
     def setUp(self):
@@ -55,6 +62,14 @@ class EntropyFromLogitsCPUTest(unittest.TestCase):
         logits = torch.randn(B, T, V)
         ref = _reference_entropy(logits)
         out = ENTROPY_MOD.compute_entropy_from_logits(logits, impl="torch")
+        torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+
+    def test_matches_reference_2d(self):
+        N, V = 32, 256
+        logits = torch.randn(N, V)
+        ref = _reference_entropy(logits)
+        out = ENTROPY_MOD.compute_entropy_from_logits(logits, impl="torch")
+        self.assertEqual(out.shape, (N,))
         torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
 
     def test_matches_reference_medium_vocab(self):
@@ -124,6 +139,14 @@ class EntropyFromLogitsCUDATest(unittest.TestCase):
         out = ENTROPY_MOD.compute_entropy_from_logits(logits, impl="triton")
         self.assertEqual(out.shape, (B, T))
         torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+
+    def test_triton_matches_torch_2d(self):
+        N, V = 2048, 4096
+        logits = torch.randn(N, V, device="cuda", dtype=torch.float32)
+        ref = ENTROPY_MOD.compute_entropy_from_logits(logits, impl="torch")
+        out = ENTROPY_MOD.compute_entropy_from_logits(logits, impl="triton")
+        self.assertEqual(out.shape, (N,))
+        torch.testing.assert_close(out, ref, rtol=2e-3, atol=2e-3)
 
     def test_triton_matches_torch_vocab_4096(self):
         """Exactly at the old cap — streaming kernel must handle correctly."""
@@ -239,6 +262,50 @@ class EntropyLossIntegrationTest(unittest.TestCase):
         torch_loss, _ = FUTURE_KL_MOD.compute_entropy_loss(logits, mask, impl="torch")
         triton_loss, _ = FUTURE_KL_MOD.compute_entropy_loss(logits, mask, impl="triton")
         torch.testing.assert_close(triton_loss, torch_loss, rtol=2e-3, atol=2e-3)
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+@unittest.skipUnless(ENTROPY_MOD.HAVE_TRITON, "Triton required")
+class EntropyDispatchIntegrationTest(unittest.TestCase):
+
+    def setUp(self):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+
+    def test_entropy_dispatch_matches_reference_3d(self):
+        B, T, V = 8, 64, 2048
+        logits = torch.randn(B, T, V, device="cuda", dtype=torch.float32)
+        ref = _reference_entropy_functional(logits)
+        out = TORCH_F.entropy_from_logits(logits)
+        self.assertEqual(out.shape, (B, T))
+        self.assertEqual(out.dtype, torch.float32)
+        torch.testing.assert_close(out, ref, rtol=2e-3, atol=2e-3)
+
+    def test_entropy_dispatch_matches_reference_2d(self):
+        N, V = 4096, 2048
+        logits = torch.randn(N, V, device="cuda", dtype=torch.float32)
+        ref = _reference_entropy_functional(logits)
+        out = TORCH_F.entropy_from_logits(logits)
+        self.assertEqual(out.shape, (N,))
+        self.assertEqual(out.dtype, torch.float32)
+        torch.testing.assert_close(out, ref, rtol=2e-3, atol=2e-3)
+
+    def test_entropy_dispatch_preserves_bfloat16_dtype(self):
+        B, T, V = 4, 32, 2048
+        logits = torch.randn(B, T, V, device="cuda", dtype=torch.bfloat16)
+        ref = _reference_entropy_functional(logits)
+        out = TORCH_F.entropy_from_logits(logits)
+        self.assertEqual(out.dtype, torch.bfloat16)
+        torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+
+    def test_entropy_chunking_dispatch_matches_reference_2d(self):
+        N, V = 4096, 4096
+        logits = torch.randn(N, V, device="cuda", dtype=torch.float32)
+        ref = _reference_entropy_functional(logits)
+        out = TORCH_F.entropy_from_logits_with_chunking(logits, chunk_size=256)
+        self.assertEqual(out.shape, (N,))
+        self.assertEqual(out.dtype, torch.float32)
+        torch.testing.assert_close(out, ref, rtol=2e-3, atol=2e-3)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
