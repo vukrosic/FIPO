@@ -1,0 +1,17 @@
+{
+  "id": "FIPO-035",
+  "title": "Fused batch statistics Triton kernel (mean/max/min)",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/batch_stats.py",
+    "tests/test_batch_stats_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_batch_stats_kernel.py -v",
+  "results": {
+    "tests_passing": 13,
+    "note": "Single-pass mean/max/min with atomic_add/max/min. Supports masked variant. Reduces 3 kernel launches to 1 for compute_data_metrics."
+  }
+}

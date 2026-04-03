@@ -1,0 +1,20 @@
+{
+  "id": "FIPO-038",
+  "title": "Fused advantage normalization (whiten + mask)",
+  "priority": "P1",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/fused_advantage_norm.py",
+    "tests/test_fused_advantage_norm_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_fused_advantage_norm_kernel.py -v",
+  "results": {
+    "tests_passing": 12,
+    "torch_ms": 0.179,
+    "triton_ms": 0.156,
+    "speedup_x": 1.15,
+    "note": "Reduces 3 passes to 2 (accum + apply). Used by REINFORCE++ and GRPO advantage pipelines."
+  }
+}

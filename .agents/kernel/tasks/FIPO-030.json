@@ -1,0 +1,17 @@
+{
+  "id": "FIPO-030",
+  "title": "Fused GMPO (Geo-Mean) policy loss Triton kernel",
+  "priority": "P1",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/gmpo_loss.py",
+    "tests/test_gmpo_loss_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_gmpo_loss_kernel.py -v",
+  "results": {
+    "tests_passing": 16,
+    "note": "Single-pass Triton kernel per sequence: accumulates neg_kl_min_sum, adv_sum, mask_sum, clip counts in one scan. Computes ratio=exp(neg_kl_min_sum/mask_sum) then loss=-adv_mean*ratio. Same GSPO pattern (FIPO-029)."
+  }
+}

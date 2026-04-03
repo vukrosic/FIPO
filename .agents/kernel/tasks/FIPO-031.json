@@ -1,0 +1,17 @@
+{
+  "id": "FIPO-031",
+  "title": "Vectorized Clip-Cov policy loss (avoid CPU sync)",
+  "priority": "P1",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/clip_cov_loss.py",
+    "tests/test_clip_cov_loss_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_clip_cov_loss_kernel.py -v",
+  "results": {
+    "tests_passing": 14,
+    "note": "Replaces torch.nonzero+randperm (CPU sync) with GPU-side topk on random priorities. Covariance band selection stays fully on GPU."
+  }
+}

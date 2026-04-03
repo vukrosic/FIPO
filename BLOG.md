@@ -5,6 +5,130 @@ numbers behind it.  Newest entries at the top.
 
 ---
 
+## FIPO-038 · Fused Advantage Normalization  *(2026-04-03)*
+
+**What.** `masked_whiten(returns, mask)` is called by REINFORCE++ and GRPO
+after computing advantages.  It requires 3 passes over `(B, T)`: one for mean,
+one for variance, and one to apply whitening.  The Triton kernel reduces this
+to 2 passes: accumulate `(sum, sum_sq, count)` with atomic adds, then apply
+`(x - mean) * rsqrt(var)` with mask in a second kernel.
+
+**File.** `verl/utils/kernel/fused_advantage_norm.py`
+**Tests.** `tests/test_fused_advantage_norm_kernel.py`
+
+**Results** (`B=32, T=2048`, float32):
+
+| Implementation | Time (ms) | Speedup |
+|---|---|---|
+| torch | 0.179 | — |
+| triton | 0.156 | **1.15x** |
+
+---
+
+## FIPO-037 · Fused Ratio + KL Kernel  *(2026-04-03)*
+
+**What.** Every PPO policy loss starts with `neg_kl = lp - olp; ratio =
+exp(clamp(neg_kl)); kl = masked_mean(-neg_kl)`.  This kernel fuses all three
+into a single flat scan with atomic reductions for the KL accumulator.
+
+**File.** `verl/utils/kernel/fused_ratio.py`
+**Tests.** `tests/test_fused_ratio_kernel.py`
+
+**Note.** Standalone benchmark shows 0.74x (Triton launch overhead dominates
+at sub-0.1ms).  The real value is as a building block inside larger fused
+kernels — eliminating the intermediate `neg_kl` tensor and the separate
+`masked_mean` kernel launch.
+
+---
+
+## FIPO-034–036 · Utility Kernels  *(2026-04-03)*
+
+**What.** Three utility kernels for common PPO patterns:
+
+- **FIPO-034** `agg_loss`: Fused loss aggregation for all 4 modes (token-mean,
+  seq-mean-token-sum, seq-mean-token-mean, seq-mean-token-sum-norm).  One Triton
+  program per sequence.
+- **FIPO-035** `batch_stats`: Single-pass mean/max/min using atomic reductions.
+  Useful for `compute_data_metrics` where 20+ separate reductions are called.
+- **FIPO-036** `fused_gpg_loss`: Fuses `-log_prob * advantages + agg_loss` into
+  a single kernel, avoiding the intermediate `pg_losses` tensor.
+
+**Lesson learned.** At sub-0.1ms per operation, Triton kernel launch overhead
+dominates.  These standalone kernels are slower than torch's optimized CUDA
+ops.  They become valuable when fused *into* larger computation chains (like
+the GMPO/GSPO kernels which already embed this pattern).
+
+---
+
+## FIPO-033 · Vectorized KL-Cov Policy Loss  *(2026-04-03)*
+
+**What.** `compute_policy_loss_kl_cov` selectively adds a KL penalty to the
+top-*k*% tokens ranked by covariance between advantages and log-probs.  The
+original implementation uses `torch.masked_select()` which triggers a CPU sync
+(CUDA must tell the CPU how many elements passed the mask before allocating the
+output tensor).
+
+**File.** `verl/utils/kernel/kl_cov_loss.py`
+**Tests.** `tests/test_kl_cov_loss_kernel.py`
+
+**Key idea.** Instead of `masked_select` → `topk` on a variable-sized tensor,
+we compute covariance over the full `(B, T)` grid, set masked positions to
+`-inf`, and call `topk` directly on the flat grid.  This stays fully on GPU
+with no CPU sync for size queries.
+
+---
+
+## FIPO-031 · Vectorized Clip-Cov Policy Loss  *(2026-04-03)*
+
+**What.** `compute_policy_loss_clip_cov` zeros out a random subset of tokens
+whose covariance(advantage, log_prob) falls in a specified band.  The original
+uses `torch.nonzero()` (CPU sync) + `torch.randperm()` (CPU-side RNG).
+
+**File.** `verl/utils/kernel/clip_cov_loss.py`
+**Tests.** `tests/test_clip_cov_loss_kernel.py`
+
+**Key idea.** Replace the `nonzero+randperm` pattern with:
+1. Assign each in-band token a random priority via `torch.rand(B, T)`
+2. Set out-of-band tokens to priority -1
+3. `topk(flat_priority, k)` to select `k` random in-band tokens
+
+This keeps the entire selection on GPU.  The random seed is different from the
+original `randperm`, but the statistical properties are identical (uniform
+random selection from the candidate set).
+
+---
+
+## FIPO-030 · Fused GMPO Policy Loss  *(2026-04-03)*
+
+**What.** GMPO (Geometric-Mean Policy Optimization) computes a *sequence-level*
+importance ratio by exponentiating the mean of *wider-clipped* per-token
+log-ratios:
+
+```
+neg_kl_min[t] = sgn(adv[t]) * min(sgn * neg_kl[t], sgn * clamp(neg_kl[t]))
+ratio[b]      = exp( mean_t( neg_kl_min[t] * mask[t] ) )
+loss[b]       = -mean_t(adv[t] * mask[t]) * ratio[b]
+```
+
+**File.** `verl/utils/kernel/gmpo_loss.py`
+**Tests.** `tests/test_gmpo_loss_kernel.py`
+**Benchmark.** `scripts/benchmark_gmpo_loss.py`
+
+**Key idea.** Unlike standard PPO which clips a token-level ratio, GMPO clips
+per-token log-ratios *then* exponentiates their sequence mean.  This is a
+single-pass reduction: one Triton program per batch element accumulates
+`neg_kl_min_sum`, `adv_sum`, `mask_sum`, and clip counts in a single scan over
+`T`.  No intermediate `(B, T)` tensors are written.
+
+**Results** (`B=32, T=2048`, float32):
+
+| Implementation | Time (ms) | Speedup |
+|---|---|---|
+| torch | 0.358 | — |
+| triton | 0.163 | **2.20x** |
+
+---
+
 ## FIPO-029 · Fused GSPO Policy Loss  *(2026-04-03)*
 
 **What.** GSPO (Group Sequence Policy Optimization) computes a *sequence-level*

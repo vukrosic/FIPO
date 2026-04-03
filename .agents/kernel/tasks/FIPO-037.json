@@ -1,0 +1,20 @@
+{
+  "id": "FIPO-037",
+  "title": "Fused ratio + KL computation kernel",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/fused_ratio.py",
+    "tests/test_fused_ratio_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_fused_ratio_kernel.py -v",
+  "results": {
+    "tests_passing": 13,
+    "torch_ms": 0.076,
+    "triton_ms": 0.102,
+    "speedup_x": 0.74,
+    "note": "Standalone is slower due to Triton launch overhead at sub-0.1ms. Value is as building block for larger fused kernels."
+  }
+}

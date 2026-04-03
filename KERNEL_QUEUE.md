@@ -120,6 +120,14 @@ Use this board as the human-readable summary. The canonical source of truth is t
 | FIPO-027 | P1 | completed | main | Fused reward + all KL types | tests/test_reward_utils_kernel.py |
 | FIPO-028 | P1 | completed | main | Fused sequence-level reductions | tests/test_seq_utils_kernel.py |
 | FIPO-029 | P1 | completed | main | Fused GSPO policy loss | tests/test_gspo_loss_kernel.py |
+| FIPO-030 | P1 | completed | main | Fused GMPO policy loss (Triton) | scripts/benchmark_gmpo_loss.py |
+| FIPO-031 | P1 | completed | main | Vectorized Clip-Cov loss (no CPU sync) | tests/test_clip_cov_loss_kernel.py |
+| FIPO-033 | P1 | completed | main | Vectorized KL-Cov loss (no CPU sync) | tests/test_kl_cov_loss_kernel.py |
+| FIPO-034 | P1 | completed | main | Fused agg_loss Triton (all 4 modes) | tests/test_agg_loss_kernel.py |
+| FIPO-035 | P2 | completed | main | Fused batch stats (mean/max/min) | tests/test_batch_stats_kernel.py |
+| FIPO-036 | P2 | completed | main | Fused GPG policy loss | tests/test_gpg_loss_kernel.py |
+| FIPO-037 | P2 | completed | main | Fused ratio + KL kernel | tests/test_fused_ratio_kernel.py |
+| FIPO-038 | P1 | completed | main | Fused advantage normalization | tests/test_fused_advantage_norm_kernel.py |
 
 - `FIPO-026` Fused gathered logprob (avoid materialising (B,T,V)):
   - `16 x 2048 x 16384`: naive `12.1 ms`, triton `5.1 ms`, `2.39x`
@@ -130,12 +138,38 @@ Use this board as the human-readable summary. The canonical source of truth is t
   - One Triton program per batch element; 15 tests passing
 - `FIPO-029` Fused GSPO policy loss:
   - Two passes per sequence, fuses ratio→clip→reduce; 17 tests passing
+- `FIPO-030` Fused GMPO (Geo-Mean) policy loss:
+  - `32 x 2048`: torch `0.358 ms`, triton `0.163 ms`, `2.20x`
+  - Single-pass Triton: wider-clip + seq-level ratio in one kernel; 16 tests passing
+- `FIPO-031` Vectorized Clip-Cov policy loss:
+  - Replaces nonzero+randperm (CPU sync) with GPU-side topk on random priorities
+  - 14 tests passing
+- `FIPO-033` Vectorized KL-Cov policy loss:
+  - Replaces masked_select CPU sync with full-grid covariance + topk
+  - 15 tests passing
+
+- `FIPO-034` Fused agg_loss Triton kernel:
+  - All 4 modes supported; BUT standalone is slower than torch (sub-0.1ms ops)
+  - Value: as building block inside larger fused kernels; 10 tests passing
+- `FIPO-035` Fused batch statistics (mean/max/min):
+  - Single-pass with atomic ops; standalone slower than torch at small sizes
+  - Value: reduces kernel launches in metrics; 13 tests passing
+- `FIPO-036` Fused GPG policy loss:
+  - Fuses -lp*adv + agg into one kernel; standalone ~0.7x vs torch at (32,2048)
+  - Value: eliminates intermediate tensor; 11 tests passing
+  - Note: sub-0.1ms ops are dominated by Triton launch overhead
+- `FIPO-037` Fused ratio + KL kernel:
+  - Computes exp(clamp(lp-olp)) + masked_mean KL in single pass
+  - Standalone 0.74x (building block); 13 tests passing
+- `FIPO-038` Fused advantage normalization:
+  - `32 x 2048`: torch `0.179 ms`, triton `0.156 ms`, **1.15x**
+  - Reduces 3 passes (mean, var, apply) to 2; 12 tests passing
 
 ## Recommended Next Tasks
 
-1. FIPO-030: Geo-Mean (GMPO) policy loss kernel
-2. FIPO-031: Fused clip-cov policy loss kernel
-3. FIPO-032: Multi-KL-type reward shaping with BF16 native support
+1. FIPO-039: Fused logprobs_from_logits Triton (avoid full (B,T,V) materialization for BF16)
+2. FIPO-040: Fused end-to-end advantage estimation (returns + whiten in one dispatch)
+3. FIPO-041: Profile and fuse the actor update inner loop
 
 ## Standard Commands
 

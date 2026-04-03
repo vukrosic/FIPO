@@ -1,0 +1,17 @@
+{
+  "id": "FIPO-034",
+  "title": "Fused agg_loss Triton kernel (all 4 modes)",
+  "priority": "P1",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/agg_loss.py",
+    "tests/test_agg_loss_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_agg_loss_kernel.py -v",
+  "results": {
+    "tests_passing": 10,
+    "note": "Single-pass per sequence, B programs. Supports token-mean, seq-mean-token-sum, seq-mean-token-mean, seq-mean-token-sum-norm."
+  }
+}
