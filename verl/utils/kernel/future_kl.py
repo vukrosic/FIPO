@@ -26,6 +26,17 @@ try:
 except ImportError:
     HAVE_TRITON = False
 
+# Lazy import to avoid circular dependency; resolved inside compute_entropy_loss_triton
+_entropy_module = None
+
+
+def _get_entropy_module():
+    global _entropy_module
+    if _entropy_module is None:
+        from verl.utils.kernel import entropy_from_logits as _m
+        _entropy_module = _m
+    return _entropy_module
+
 
 FutureKLImpl = Literal["auto", "torch", "triton"]
 
@@ -1557,60 +1568,42 @@ if HAVE_TRITON:
 def compute_entropy_loss_triton(
     logits: torch.Tensor,
     response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Triton implementation of fused entropy loss with atomic-add reduction.
+    """Triton entropy loss using the streaming kernel (FIPO-039).
+
+    Delegates per-token entropy to entropy_from_logits.py which handles
+    arbitrary vocab sizes and BF16 input without materialising (B,T,V).
 
     Returns:
-        entropy_loss: scalar tensor (masked mean entropy)
-        mean_entropy: scalar tensor (mean entropy for monitoring)
+        entropy_loss: scalar tensor
+        mean_entropy: scalar tensor (monitoring)
     """
     if not HAVE_TRITON:
         raise RuntimeError("Triton is not installed.")
     if not logits.is_cuda or not response_mask.is_cuda:
         raise RuntimeError("Fused entropy loss requires CUDA tensors.")
-    if logits.dtype != torch.float32 or response_mask.dtype != torch.float32:
-        raise RuntimeError("Fused entropy loss currently expects float32 tensors.")
 
-    batch_size, seq_len, vocab_size = logits.shape
+    em = _get_entropy_module()
+    # Streaming kernel: (B, T) float32, no (B,T,V) allocation, any vocab size
+    token_entropy = em.compute_entropy_from_logits_triton(logits)  # (B, T)
 
-    # Fall back to torch if vocab_size exceeds what the kernel can handle correctly.
-    # The kernel uses one block per token with BLOCK_SIZE threads. If vocab_size > BLOCK_SIZE,
-    # we only process the first BLOCK_SIZE elements, which can give wrong results.
-    # We use a conservative threshold of 4096 (minimum BLOCK_SIZE) to guarantee correctness.
-    if vocab_size > 4096:
-        return compute_entropy_loss_torch(logits, response_mask, loss_agg_mode="token-mean")
+    mask = response_mask.float()
+    if loss_agg_mode == "token-mean":
+        entropy_loss = (token_entropy * mask).sum() / (mask.sum() + 1e-8)
+    elif loss_agg_mode == "seq-mean-token-sum":
+        seq_losses = (token_entropy * mask).sum(dim=-1)
+        entropy_loss = seq_losses.mean()
+    elif loss_agg_mode == "seq-mean-token-mean":
+        seq_losses = (token_entropy * mask).sum(dim=-1) / (mask.sum(dim=-1) + 1e-8)
+        entropy_loss = seq_losses.mean()
+    elif loss_agg_mode == "seq-mean-token-sum-norm":
+        seq_losses = (token_entropy * mask).sum(dim=-1)
+        entropy_loss = seq_losses.sum() / logits.shape[1]
+    else:
+        raise ValueError(f"Unknown loss_agg_mode: {loss_agg_mode!r}")
 
-    total_tokens = batch_size * seq_len
-
-    # Flatten logits: (batch, seq, vocab) -> (batch * seq, vocab)
-    logits_flat = logits.reshape(total_tokens, vocab_size)
-    mask_flat = response_mask.reshape(total_tokens)
-
-    # Use atomic add buffers - initialize to zero
-    entropy_sum = torch.zeros((), device=logits.device, dtype=torch.float32)
-    entropy_count = torch.zeros((), device=logits.device, dtype=torch.float32)
-
-    # Grid: one block per token
-    grid = lambda meta: (total_tokens,)
-
-    _fused_entropy_loss_kernel[grid](
-        logits_flat,
-        mask_flat,
-        entropy_sum,
-        entropy_count,
-        total_tokens,
-        vocab_size,
-        logits_flat.stride(0),
-    )
-
-    # Compute final values
-    entropy_loss = entropy_sum / (entropy_count + 1e-8)
-    # For mean_entropy, we need to compute it separately since we only tracked masked values
-    # We'll compute unweighted mean using torch (this is just for monitoring, not the loss)
-    # Actually, let's compute it in the kernel too for efficiency
-    # But for now, compute on CPU since it's just for monitoring
-    mean_entropy = entropy_loss  # Use masked mean as approximation for monitoring
-
+    mean_entropy = token_entropy.mean()
     return entropy_loss, mean_entropy
 
 
@@ -1637,20 +1630,15 @@ def compute_entropy_loss(
     if resolved_impl == "auto":
         resolved_impl = (
             "triton"
-            if HAVE_TRITON
-            and logits.is_cuda
-            and response_mask.is_cuda
-            and logits.dtype == torch.float32
-            and response_mask.dtype == torch.float32
+            if HAVE_TRITON and logits.is_cuda and response_mask.is_cuda
             else "torch"
         )
 
     if resolved_impl == "triton":
-        # Triton path only supports token-mean for now
-        if loss_agg_mode != "token-mean":
-            # Fall back to torch for other modes
-            return compute_entropy_loss_torch(logits, response_mask, loss_agg_mode)
-        return compute_entropy_loss_triton(logits=logits, response_mask=response_mask)
+        # FIPO-039: streaming kernel supports all vocab sizes, BF16, all agg modes
+        return compute_entropy_loss_triton(
+            logits=logits, response_mask=response_mask, loss_agg_mode=loss_agg_mode
+        )
     if resolved_impl == "torch":
         return compute_entropy_loss_torch(logits=logits, response_mask=response_mask, loss_agg_mode=loss_agg_mode)
 

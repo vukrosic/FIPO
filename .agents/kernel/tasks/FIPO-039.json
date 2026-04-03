@@ -1,0 +1,25 @@
+{
+  "id": "FIPO-039",
+  "title": "Fused entropy from logits — streaming vocab kernel (any size + BF16)",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "files": [
+    "verl/utils/kernel/entropy_from_logits.py",
+    "tests/test_entropy_from_logits_kernel.py"
+  ],
+  "test": "python -m pytest tests/test_entropy_from_logits_kernel.py -v",
+  "results": {
+    "tests_passing": 23,
+    "torch_ms_v4096": 15.730,
+    "triton_ms_v4096": 1.279,
+    "speedup_v4096": 12.30,
+    "torch_ms_v8192": 31.484,
+    "triton_ms_v8192": 2.546,
+    "speedup_v8192": 12.37,
+    "torch_v32768": "OOM",
+    "triton_ms_v32768": "works",
+    "note": "Streaming single-pass kernel using online logsumexp trick. Old kernel was capped at V<=4096; new kernel handles any vocab size and BF16. Also upgraded compute_entropy_loss in future_kl.py to use this kernel — removes dtype restriction and enables all 4 agg modes for Triton path."
+  }
+}
