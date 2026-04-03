@@ -127,58 +127,59 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         return_diff_var = torch.var(valid_returns - valid_values)
         return_var = torch.var(valid_returns)
 
-    metrics = {
+    # Build all metric tensors first, then extract values with a single sync point
+    # This avoids 20+ GPU sync points from .detach().item() calls in the dict literal
+    metric_tensors = {
         # score
-        "critic/score/mean": torch.mean(sequence_score).detach().item(),
-        "critic/score/max": torch.max(sequence_score).detach().item(),
-        "critic/score/min": torch.min(sequence_score).detach().item(),
+        "critic/score/mean": torch.mean(sequence_score),
+        "critic/score/max": torch.max(sequence_score),
+        "critic/score/min": torch.min(sequence_score),
         # reward
-        "critic/rewards/mean": torch.mean(sequence_reward).detach().item(),
-        "critic/rewards/max": torch.max(sequence_reward).detach().item(),
-        "critic/rewards/min": torch.min(sequence_reward).detach().item(),
+        "critic/rewards/mean": torch.mean(sequence_reward),
+        "critic/rewards/max": torch.max(sequence_reward),
+        "critic/rewards/min": torch.min(sequence_reward),
         # adv
-        "critic/advantages/mean": torch.mean(valid_adv).detach().item(),
-        "critic/advantages/max": torch.max(valid_adv).detach().item(),
-        "critic/advantages/min": torch.min(valid_adv).detach().item(),
+        "critic/advantages/mean": torch.mean(valid_adv),
+        "critic/advantages/max": torch.max(valid_adv),
+        "critic/advantages/min": torch.min(valid_adv),
         # returns
-        "critic/returns/mean": torch.mean(valid_returns).detach().item(),
-        "critic/returns/max": torch.max(valid_returns).detach().item(),
-        "critic/returns/min": torch.min(valid_returns).detach().item(),
-        **(
-            {
-                # values
-                "critic/values/mean": torch.mean(valid_values).detach().item(),
-                "critic/values/max": torch.max(valid_values).detach().item(),
-                "critic/values/min": torch.min(valid_values).detach().item(),
-                # vf explained var
-                "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
-            }
-            if use_critic
-            else {}
-        ),
+        "critic/returns/mean": torch.mean(valid_returns),
+        "critic/returns/max": torch.max(valid_returns),
+        "critic/returns/min": torch.min(valid_returns),
         # response length
-        "response_length/mean": torch.mean(response_length).detach().item(),
-        "response_length/max": torch.max(response_length).detach().item(),
-        "response_length/min": torch.min(response_length).detach().item(),
-        "response_length/median": torch.median(response_length).detach().item(),
-        "response_length/q25": torch.quantile(response_length, 0.25).detach().item(),
-        "response_length/q75": torch.quantile(response_length, 0.75).detach().item(),
-        "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float())
-        .detach()
-        .item(),
+        "response_length/mean": torch.mean(response_length),
+        "response_length/max": torch.max(response_length),
+        "response_length/min": torch.min(response_length),
+        "response_length/median": torch.median(response_length),
+        "response_length/q25": torch.quantile(response_length, 0.25),
+        "response_length/q75": torch.quantile(response_length, 0.75),
+        "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float()),
         # prompt length
-        "prompt_length/mean": torch.mean(prompt_length).detach().item(),
-        "prompt_length/max": torch.max(prompt_length).detach().item(),
-        "prompt_length/min": torch.min(prompt_length).detach().item(),
-        "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
+        "prompt_length/mean": torch.mean(prompt_length),
+        "prompt_length/max": torch.max(prompt_length),
+        "prompt_length/min": torch.min(prompt_length),
+        "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()),
     }
 
-    # multi-turn conversation
+    if use_critic:
+        metric_tensors.update({
+            # values
+            "critic/values/mean": torch.mean(valid_values),
+            "critic/values/max": torch.max(valid_values),
+            "critic/values/min": torch.min(valid_values),
+            # vf explained var
+            "critic/vf_explained_var": 1.0 - return_diff_var / (return_var + 1e-5),
+        })
+
+    # multi-turn conversation (non-tensor data, no sync needed)
     if "__num_turns__" in batch.non_tensor_batch:
         num_turns = batch.non_tensor_batch["__num_turns__"]
-        metrics["num_turns/min"] = num_turns.min()
-        metrics["num_turns/max"] = num_turns.max()
-        metrics["num_turns/mean"] = num_turns.mean()
+        metric_tensors["num_turns/min"] = num_turns.min()
+        metric_tensors["num_turns/max"] = num_turns.max()
+        metric_tensors["num_turns/mean"] = num_turns.mean()
+
+    # Single pass to extract all values (one .item() call per tensor)
+    metrics = {k: v.item() for k, v in metric_tensors.items()}
 
     return metrics
 
@@ -207,8 +208,13 @@ def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> di
           (prompt + response)
     """
     response_info = _compute_response_info(batch)
-    num_prompt_tokens = torch.sum(response_info["prompt_length"]).item()
-    num_response_tokens = torch.sum(response_info["response_length"]).item()
+    # Single sync point instead of two
+    prompt_len_sum, response_len_sum = torch.stack([
+        torch.sum(response_info["prompt_length"]),
+        torch.sum(response_info["response_length"])
+    ]).tolist()
+    num_prompt_tokens = int(prompt_len_sum)
+    num_response_tokens = int(response_len_sum)
     num_overall_tokens = num_prompt_tokens + num_response_tokens
 
     num_tokens_of_section = {
@@ -291,15 +297,22 @@ def bootstrap_metric(
         >>> bootstrap_metric(data, 3, reduce_fns)
         [(3.0, 0.5), (4.5, 0.3)]  # Example values
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+    data_arr = np.array(data)
 
-    bootstrap_metric_lsts = [[] for _ in range(len(reduce_fns))]
-    for _ in range(n_bootstrap):
-        bootstrap_idxs = np.random.choice(len(data), size=subset_size, replace=True)
-        bootstrap_data = [data[i] for i in bootstrap_idxs]
-        for i, reduce_fn in enumerate(reduce_fns):
-            bootstrap_metric_lsts[i].append(reduce_fn(bootstrap_data))
-    return [(np.mean(lst), np.std(lst)) for lst in bootstrap_metric_lsts]
+    # Generate all bootstrap indices at once: shape (n_bootstrap, subset_size)
+    all_idxs = rng.choice(len(data), size=(n_bootstrap, subset_size), replace=True)
+
+    # Get all bootstrap samples at once: shape (n_bootstrap, subset_size)
+    all_bootstrap_data = data_arr[all_idxs]
+
+    results = []
+    for reduce_fn in reduce_fns:
+        # Apply reduce_fn to each bootstrap sample (axis=-1 gives 1D array of length n_bootstrap)
+        bootstrap_results = reduce_fn(all_bootstrap_data, axis=-1)
+        results.append((float(np.mean(bootstrap_results)), float(np.std(bootstrap_results))))
+
+    return results
 
 
 def calc_maj_val(data: list[dict[str, Any]], vote_key: str, val_key: str) -> float:

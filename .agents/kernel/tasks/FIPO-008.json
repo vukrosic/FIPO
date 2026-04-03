@@ -2,10 +2,10 @@
   "schema_version": 1,
   "id": "FIPO-008",
   "title": "Ampere-oriented CE benchmark matrix and tuning policy",
-  "summary": "Decide whether CE autotune should stay device-agnostic or split by measured architecture buckets.",
+  "summary": "Validated that CE tuning should stay device-agnostic and exposed reproducible benchmark/test entrypoints for CE work.",
   "priority": "P1",
-  "status": "queued",
-  "owner": "unclaimed",
+  "status": "completed",
+  "owner": "main",
   "claimed_utc": null,
   "lease_expires_utc": null,
   "updated_utc": "2026-04-02T00:00:00Z",
@@ -13,21 +13,29 @@
   "resource_class": "gpu_exclusive",
   "scope_files": [
     "verl/utils/kernel/kernels.py",
-    "scripts/"
+    "scripts/benchmark_linear_cross_entropy.py",
+    "tests/test_linear_cross_entropy_kernels.py"
   ],
-  "depends_on": [],
+  "depends_on": [
+    "FIPO-004"
+  ],
   "blocked_by": [],
   "duplicate_of": null,
   "benchmark": {
-    "command": "TODO: add CE benchmark matrix script",
+    "command": "python scripts/benchmark_linear_cross_entropy.py --num-tokens 4096 --hidden-size 4096 --vocab-size 32768 --dtype bfloat16 --benchmark all --backward-method split_n --warmup 3 --iters 6",
     "representative_shapes": [
-      "Ampere-friendly CE shapes"
+      "2048x4096x32768 bfloat16",
+      "4096x4096x32768 bfloat16"
     ]
   },
   "tests": {
-    "command": "TODO: add CE parity tests"
+    "command": "python -m unittest tests.test_linear_cross_entropy_kernels -v"
   },
-  "success_gate": "Keep the default path device-agnostic unless a measured split is justified.",
-  "results": null,
+  "success_gate": "Only introduce architecture-specific policy if the measured matrix shows device-agnostic autotune is insufficient.",
+  "results": {
+    "policy": "device_agnostic_autotune",
+    "matrix_status": "completed",
+    "note": "Measured CE behavior on the local Ampere GPU did not justify architecture-specific buckets. The benchmark and parity test harnesses are now in place for future CE work."
+  },
   "notes": []
 }

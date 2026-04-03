@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-020",
+  "title": "logprobs vectorization",
+  "summary": "Replace Python loops in logprobs_from_logits_v2 with vectorized operations for 5-13x speedup.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/torch_functional.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "manual timing comparison",
+    "representative_shapes": [
+      "Float32: 4,096 -> 82ms -> 15ms (5.6x)",
+      "Float32: 262,144 -> 7674ms -> 1009ms (7.6x)",
+      "Bfloat16: 65,536 -> 1250ms -> 96ms (13x)"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Same results as original, verified across dtype/shape combinations.",
+  "results": {
+    "float32_speedup": "5.6-7.6x",
+    "bfloat16_speedup": "7.3-13x",
+    "approach": "Replaced torch.stack([torch.logsumexp(...)]) with single torch.logsumexp call"
+  },
+  "notes": []
+}

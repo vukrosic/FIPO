@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-010",
+  "title": "GAE reverse-scan kernel",
+  "summary": "Implemented a Triton reverse scan for GAE and replaced the Python loop in compute_gae_advantage_return.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/advantage_kernels.py",
+    "verl/trainer/ppo/core_algos.py",
+    "scripts/benchmark_advantage_kernels.py",
+    "tests/test_advantage_kernels.py"
+  ],
+  "depends_on": [
+    "FIPO-009"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_advantage_kernels.py --batch-size 32 --response-len 2048 --dtype float32 --gamma 0.99 --lam 0.95 --warmup 5 --iters 10",
+    "representative_shapes": [
+      "32x2048 float32"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_advantage_kernels -v"
+  },
+  "success_gate": "Preserve the original masked GAE semantics while materially beating the Python reverse-loop baseline.",
+  "results": {
+    "gae_torch_ms": 294.038,
+    "gae_triton_ms": 0.143,
+    "gae_speedup_x": 2059.87,
+    "bf16_upcast_tested": true,
+    "note": "GAE now upcasts inputs to float32 before the Triton recurrence and retains the existing masked_whiten postprocessing."
+  },
+  "notes": []
+}

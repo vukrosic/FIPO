@@ -93,30 +93,39 @@ class BatchRewardManager(AbstractRewardManager):
         rewards = []
         already_printed: dict[str, Any] = {}
 
-        for i in range(len(data)):
-            length = valid_response_lengths[i].item()
-            score = scores[i]
+        # Vectorize: compute indices once (avoids GPU sync per iteration from .item())
+        lengths = valid_response_lengths - 1  # (num_data,)
+        row_indices = torch.arange(len(data), device=lengths.device)
+        indices = (row_indices, lengths)
 
+        # Handle dict vs scalar scores and populate reward_extra_info
+        reward_list = []
+        for i, score in enumerate(scores):
             if isinstance(score, dict):
                 reward = score["score"]
                 for key, value in score.items():
                     reward_extra_info[key].append(value)
             else:
                 reward = score
+            reward_list.append(reward)
 
-            rewards.append(reward)
-            reward_tensor[i, length - 1] = reward
+            # Printing logic (only iterate if we need to print something)
+            if self.num_examine > 0:
+                data_source = data_sources[i]
+                if already_printed.get(data_source, 0) < self.num_examine:
+                    length = valid_response_lengths[i]
+                    response_str = self.tokenizer.decode(data.batch["responses"][i][:length], skip_special_tokens=True)
+                    prompt_str = self.tokenizer.decode(data.batch["prompts"][i], skip_special_tokens=True)
+                    ground_truth = data[i].non_tensor_batch["reward_model"].get("ground_truth", None)
+                    print("[prompt]", prompt_str)
+                    print("[response]", response_str)
+                    print("[ground_truth]", ground_truth)
+                    print("[score]", score)
+                    already_printed[data_source] = already_printed.get(data_source, 0) + 1
 
-            data_source = data_sources[i]
-            if already_printed.get(data_source, 0) < self.num_examine:
-                response_str = self.tokenizer.decode(data.batch["responses"][i][:length], skip_special_tokens=True)
-                prompt_str = self.tokenizer.decode(data.batch["prompts"][i], skip_special_tokens=True)
-                ground_truth = data[i].non_tensor_batch["reward_model"].get("ground_truth", None)
-                print("[prompt]", prompt_str)
-                print("[response]", response_str)
-                print("[ground_truth]", ground_truth)
-                print("[score]", scores[i])
-                already_printed[data_source] = already_printed.get(data_source, 0) + 1
+        # Vectorized assignment
+        reward_tensor[indices] = torch.tensor(reward_list, device=reward_tensor.device, dtype=reward_tensor.dtype)
+        rewards = reward_list
 
         data.batch["acc"] = torch.tensor(rewards, dtype=torch.float32, device=prompt_ids.device)
 

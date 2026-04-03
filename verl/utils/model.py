@@ -202,17 +202,25 @@ def create_random_mask(
     max_left_padding = int(sequence_length * max_ratio_of_left_padding)
     assert max_num_valid_tokens + max_left_padding <= sequence_length
     assert max_num_valid_tokens > 0 and max_ratio_of_valid_token <= sequence_length
-    masks = torch.ones_like(input_ids, dtype=torch.int64)
-    # TODO: we can make this faster
-    for i in range(batch_size):
-        num_left_padding = np.random.randint(low=0, high=max_left_padding + 1, dtype=np.int64)
-        num_valid = np.random.randint(low=min_num_valid_tokens, high=max_num_valid_tokens + 1, dtype=np.int64)
 
-        for index in range(num_left_padding):
-            masks[i, index] = 0
+    # Vectorized random mask generation using torch
+    # Sample left padding and valid lengths for all samples at once
+    num_left_padding = torch.randint(
+        low=0, high=max_left_padding + 1, size=(batch_size,), dtype=torch.int64, device=input_ids.device
+    )
+    num_valid = torch.randint(
+        low=min_num_valid_tokens, high=max_num_valid_tokens + 1, size=(batch_size,), dtype=torch.int64, device=input_ids.device
+    )
 
-        for index in range(num_left_padding + num_valid, sequence_length):
-            masks[i, index] = 0
+    # Create position indices [0, 1, 2, ..., sequence_length-1]
+    positions = torch.arange(sequence_length, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
+
+    # Vectorized comparison: True where position < left_padding or position >= left_padding + num_valid
+    left_padding_mask = positions < num_left_padding.unsqueeze(1)
+    right_padding_mask = positions >= (num_left_padding + num_valid).unsqueeze(1)
+    padding_mask = left_padding_mask | right_padding_mask
+
+    masks = torch.where(padding_mask, torch.zeros_like(input_ids, dtype=torch.int64), torch.ones_like(input_ids, dtype=torch.int64))
     return masks
 
 

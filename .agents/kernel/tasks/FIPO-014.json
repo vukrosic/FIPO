@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-014",
+  "title": "GRPO/RLOO/OPO/GPG group advantage vectorization",
+  "summary": "Replace Python loop-based group advantage computation with index_add-based vectorization for GRPO, RLOO, OPO, and GPG outcome advantages.",
+  "priority": "P1",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/advantage_kernels.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_group_advantage_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_group_advantage.py --batch-size 512 --groups 32 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "512x2048 32 groups GRPO",
+      "512x2048 32 groups RLOO"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Vectorized kernels produce same results as reference implementations with 5x+ speedup on group operations.",
+  "results": {
+    "grpo_speedup": "61.8x (21.2ms -> 0.34ms)",
+    "rloo_speedup": "127.4x (28.9ms -> 0.23ms)",
+    "kernels_added": "compute_grpo_outcome_advantage_torch, compute_rloo_outcome_advantage_torch, compute_opo_outcome_advantage_torch, compute_gpg_outcome_advantage_torch",
+    "tests": "13 new tests passing (9 CPU + 4 CUDA)"
+  },
+  "notes": []
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-015",
+  "title": "Fused value loss kernel",
+  "summary": "Create a fused Triton kernel for value loss computation that computes vf_losses1, vf_losses2, clipped_vf_losses, vf_loss, and vf_clipfrac in a single pass.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_fipo_loss.py (value loss portion)",
+    "representative_shapes": [
+      "32x2048 float32 value loss"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_future_kl_kernels.ValueLossKernelCUDATest -v"
+  },
+  "success_gate": "Fused kernel produces same results as original with ~1.5x speedup for token-mean mode.",
+  "results": {
+    "speedup": "1.5x across various batch sizes",
+    "kernels_added": "_fused_value_loss_kernel, compute_value_loss_torch, compute_value_loss_triton, compute_value_loss",
+    "integration": "compute_value_loss integrated into core_algos.py for token-mean mode",
+    "tests": "8 new tests passing"
+  },
+  "notes": []
+}

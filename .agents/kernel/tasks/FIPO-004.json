@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "id": "FIPO-004",
-  "title": "Expand autotune coverage for linear-cross-entropy kernels",
-  "summary": "Broadened Triton autotune coverage for CE forward and backward kernels.",
+  "title": "Tune linear-cross-entropy autotune coverage and split defaults",
+  "summary": "Expanded safe Triton autotune configs for CE and set better default vocab split thresholds on Ampere-class GPUs.",
   "priority": "P0",
   "status": "completed",
   "owner": "main",
@@ -13,26 +13,34 @@
   "resource_class": "gpu_exclusive",
   "scope_files": [
     "verl/utils/kernel/kernels.py",
-    "verl/utils/kernel/linear_cross_entropy.py"
+    "verl/utils/kernel/linear_cross_entropy.py",
+    "scripts/benchmark_linear_cross_entropy.py",
+    "tests/test_linear_cross_entropy_kernels.py"
   ],
   "depends_on": [],
   "blocked_by": [],
   "duplicate_of": null,
   "benchmark": {
-    "command": "TODO: add scripts/benchmark_linear_ce.py",
+    "command": "python scripts/benchmark_linear_cross_entropy.py --num-tokens 2048 --hidden-size 4096 --vocab-size 32768 --dtype bfloat16 --benchmark all --backward-method split_n --warmup 3 --iters 6",
     "representative_shapes": [
-      "Match PPO postprocessing CE shapes"
+      "2048x4096x32768 bfloat16",
+      "4096x4096x32768 bfloat16"
     ]
   },
   "tests": {
-    "command": "python -m unittest discover -s tests -v"
+    "command": "python -m unittest tests.test_linear_cross_entropy_kernels -v"
   },
-  "success_gate": "Expand the config surface without regressing correctness, then measure it with a dedicated CE benchmark.",
+  "success_gate": "Keep CE numerically correct while improving or preserving runtime on representative PPO postprocessing shapes.",
   "results": {
-    "forward_kernel_configs": 8,
-    "backward_kernel_configs": 6,
-    "epilogue_kernel_configs": 6,
-    "note": "Expanded autotune configs for forward mainloop (1->8), backward kernels (1->6 each), and epilogue kernels (1->6 each). Configs cover small, medium, and large token-vocab combinations."
+    "forward_vocab_per_split": 4096,
+    "backward_vocab_per_split": 16384,
+    "shape_2048_forward_ms": 58.703,
+    "shape_2048_backward_ms": 87.202,
+    "shape_2048_full_ms": 146.08,
+    "shape_4096_forward_ms": 117.808,
+    "shape_4096_backward_ms": 172.509,
+    "shape_4096_full_ms": 290.775,
+    "note": "Safe config grids were widened and split-N thresholds were tuned to 4096/16384. This improved the representative full pass from 153.365ms to 146.080ms at 2048 tokens and from 299.368ms to 290.775ms at 4096 tokens."
   },
   "notes": []
 }

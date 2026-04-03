@@ -170,16 +170,27 @@ class PrimeRewardManager(AbstractRewardManager):
 
         scores = self.verify(data)
 
-        for i in range(len(data)):
-            data_source = data_sources[i]
-            reward_tensor[i, valid_response_length[i].item() - 1] = scores[i]
+        # Vectorized indexing to avoid GPU sync per sample
+        lengths = valid_response_length - 1  # (num_data,)
+        row_indices = torch.arange(len(data), device=lengths.device)
+        indices = (row_indices, lengths)
 
-            if data_source not in already_print_data_sources:
-                already_print_data_sources[data_source] = 0
+        # Handle dict vs scalar scores
+        reward_list = []
+        for i, score in enumerate(scores):
+            if isinstance(score, dict):
+                reward_list.append(score["score"])
+            else:
+                reward_list.append(score)
 
-            if already_print_data_sources[data_source] < self.num_examine:
-                already_print_data_sources[data_source] += 1
-                print(sequences_str)
+        reward_tensor[indices] = torch.tensor(reward_list, device=reward_tensor.device, dtype=reward_tensor.dtype)
+
+        # Printing logic (only if needed)
+        if self.num_examine > 0:
+            for i, data_source in enumerate(data_sources):
+                if already_print_data_sources.get(data_source, 0) < self.num_examine:
+                    already_print_data_sources[data_source] = already_print_data_sources.get(data_source, 0) + 1
+                    print(sequences_str[i])
 
         if return_dict:
             return {"reward_tensor": reward_tensor}

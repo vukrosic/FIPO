@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-018",
+  "title": "GRPO_PASSK vectorization",
+  "summary": "Replace Python loop-based GRPO_PASSK advantage computation with index_add/sort-based vectorization.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/advantage_kernels.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_group_advantage_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_group_advantage.py",
+    "representative_shapes": [
+      "batch_size=2048, response_len=1024, num_groups=256"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_group_advantage_kernels -v"
+  },
+  "success_gate": "Vectorized kernel matches reference implementation with 10x+ speedup.",
+  "results": {
+    "speedup": "19x (batch=2048, response_len=1024, num_groups=256)",
+    "algorithm": "Uses torch.sort on reshaped (num_groups, k) tensor for top-2 selection",
+    "tests": "5 new tests passing"
+  },
+  "notes": []
+}

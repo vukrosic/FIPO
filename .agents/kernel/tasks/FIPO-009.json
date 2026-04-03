@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-009",
+  "title": "Discounted-return reverse-scan kernel for REINFORCE++ and REMAX",
+  "summary": "Replaced the Python reverse loop for discounted returns with a Triton reverse scan and integrated it into the outcome-advantage paths.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": null,
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/advantage_kernels.py",
+    "verl/trainer/ppo/core_algos.py",
+    "scripts/benchmark_advantage_kernels.py",
+    "tests/test_advantage_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_advantage_kernels.py --batch-size 32 --response-len 2048 --dtype float32 --gamma 0.99 --lam 0.95 --warmup 5 --iters 10",
+    "representative_shapes": [
+      "32x2048 float32"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_advantage_kernels -v"
+  },
+  "success_gate": "Match the torch reference and beat the reverse-loop baseline on representative REINFORCE++ and REMAX shapes.",
+  "results": {
+    "discounted_returns_torch_ms": 80.444,
+    "discounted_returns_triton_ms": 0.089,
+    "discounted_returns_speedup_x": 907.04,
+    "remax_returns_torch_ms": 80.333,
+    "remax_returns_triton_ms": 0.098,
+    "remax_returns_speedup_x": 822.33,
+    "note": "The Triton reverse scan is now used by the REINFORCE++ and REMAX outcome-advantage paths."
+  },
+  "notes": []
+}

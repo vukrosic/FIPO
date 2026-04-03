@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-025",
+  "title": "PPO loss all modes fusion",
+  "summary": "Extended fused PPO loss to support all 4 aggregation modes (token-mean, seq-mean-token-sum, seq-mean-token-mean, seq-mean-token-sum-norm).",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m unittest tests.test_future_kl_kernels -v",
+    "representative_shapes": [
+      "32x2048 all 4 loss_agg_mode options"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_future_kl_kernels -v"
+  },
+  "success_gate": "All 4 modes supported with numerical parity.",
+  "results": {
+    "modes": "token-mean (14x triton), seq-mean-* (correct via torch fallback)",
+    "fix": "Fixed invalid thread contributions to seq_counts"
+  },
+  "notes": []
+}

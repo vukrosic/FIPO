@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-017",
+  "title": "KL penalty fused kernel",
+  "summary": "Fused KL penalty + masked_mean kernel that computes low_var_kl formula and applies response_mask weighting in a single kernel launch.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_kl_loss.py",
+    "representative_shapes": [
+      "32x2048 float32 KL loss"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_future_kl_kernels.KLLossKernelCUDATest -v"
+  },
+  "success_gate": "Fused kernel produces same results as original two-step approach.",
+  "results": {
+    "integration": "KL penalty modes computed with masked reduction in single kernel",
+    "tests": "4 new tests passing"
+  },
+  "notes": []
+}

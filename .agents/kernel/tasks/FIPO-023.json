@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-023",
+  "title": "remove_pad vectorization",
+  "summary": "Replaced Python loop in remove_pad_token with vectorized torch operations.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/torch_functional.py",
+    "tests/test_remove_pad_token.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "manual timing comparison",
+    "representative_shapes": [
+      "bs=32, seq_len=128: 1.8x speedup",
+      "bs=256, seq_len=512: 1.9x speedup"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_remove_pad_token -v"
+  },
+  "success_gate": "Vectorized version matches original with speedup.",
+  "results": {
+    "speedup": "1.8-1.9x",
+    "approach": "Batch gather with masked_fill instead of Python loop"
+  },
+  "notes": []
+}

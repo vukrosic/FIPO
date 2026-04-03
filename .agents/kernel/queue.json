@@ -73,22 +73,24 @@
     },
     {
       "id": "FIPO-004",
-      "title": "Expand autotune coverage for linear-cross-entropy kernels",
+      "title": "Tune linear-cross-entropy autotune coverage and split defaults",
       "priority": "P0",
       "status": "completed",
       "owner": "main",
-      "kind": "kernel",
+      "kind": "autotune",
       "files": [
         "verl/utils/kernel/kernels.py",
-        "verl/utils/kernel/linear_cross_entropy.py"
+        "verl/utils/kernel/linear_cross_entropy.py",
+        "scripts/benchmark_linear_cross_entropy.py",
+        "tests/test_linear_cross_entropy_kernels.py"
       ],
-      "benchmark": "TODO: add scripts/benchmark_linear_ce.py",
-      "test": "python -m unittest discover -s tests -v",
+      "benchmark": "python scripts/benchmark_linear_cross_entropy.py --num-tokens 2048 --hidden-size 4096 --vocab-size 32768 --dtype bfloat16 --benchmark all --backward-method split_n --warmup 3 --iters 6",
+      "test": "python -m unittest tests.test_linear_cross_entropy_kernels -v",
       "results": {
-        "forward_kernel_configs": 8,
-        "backward_kernel_configs": 6,
-        "epilogue_kernel_configs": 6,
-        "note": "Expanded autotune configs for forward mainloop (1->8), backward kernels (1->6 each), and epilogue kernels (1->6 each). Configs cover small/medium/large token-vocab combinations."
+        "forward_vocab_per_split": 4096,
+        "backward_vocab_per_split": 16384,
+        "shape_2048_full_ms": 146.08,
+        "shape_4096_full_ms": 290.775
       }
     },
     {
@@ -110,8 +112,7 @@
         "future_kl_speedup_x": 21.86,
         "influence_weights_torch_ms": 0.085,
         "influence_weights_triton_ms": 0.061,
-        "influence_weights_speedup_x": 1.39,
-        "note": "Full FIPO path with triton future_kl and influence_weights. future_kl is the main hotspot at 21.86x speedup."
+        "influence_weights_speedup_x": 1.39
       }
     },
     {
@@ -123,47 +124,39 @@
       "kind": "research",
       "files": [
         "verl/utils/kernel/future_kl.py",
+        "verl/trainer/ppo/core_algos.py",
         "scripts/benchmark_future_kl.py",
         "tests/test_future_kl_kernels.py"
       ],
-      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype bfloat16 --warmup 10 --iters 30",
-      "test": "python -m unittest discover -s tests -v",
+      "benchmark": "python scripts/benchmark_future_kl.py --batch-size 32 --response-len 2048 --dtype bfloat16 --warmup 5 --iters 10",
+      "test": "python -m unittest tests.test_future_kl_kernels -v",
       "results": {
-        "bf16_speedup_x": 18.32,
-        "bf16_approach": "upcast_to_float32",
-        "findings": "BF16 inputs are correctly upcast to float32 before kernel call. This is the recommended approach per KERNEL_RULES.md. Native BF16 kernel not needed because upcast overhead is in Python before kernel call.",
-        "recommendation": "Keep current upcast approach. No native BF16 kernel needed."
+        "bf16_supported": true,
+        "torch_ms": 1.907,
+        "triton_ms": 0.087,
+        "speedup_x": 21.83,
+        "approach": "upcast_to_float32_before_triton"
       }
     },
     {
       "id": "FIPO-007",
-      "title": "Profile FIPO metrics to find next true hotspot",
+      "title": "Profile and fuse Future-KL ratio metrics",
       "priority": "P1",
       "status": "completed",
       "owner": "main",
       "kind": "profiler",
       "files": [
+        "verl/utils/kernel/future_kl.py",
         "verl/trainer/ppo/core_algos.py",
-        "scripts/",
-        "scripts/profile_fipo_metrics.py",
-        "scripts/profile_fipo_metrics_breakdown.py",
-        "scripts/benchmark_ratio_metrics.py"
+        "scripts/benchmark_ratio_metrics.py",
+        "tests/test_future_kl_kernels.py"
       ],
-      "benchmark": "TODO: add focused profiler script",
-      "test": "python -m unittest discover -s tests -v",
+      "benchmark": "python scripts/benchmark_ratio_metrics.py --batch-size 32 --response-len 2048 --clip-ratio-c 3.0 --warmup 5 --iters 10",
+      "test": "python -m unittest tests.test_future_kl_kernels -v",
       "results": {
-        "original_ms": 1.668,
-        "fused_ms": 1.013,
-        "speedup_x": 1.65,
-        "findings": [
-          "Filtering (ratio[mask]) is the dominant cost at 4.6ms for two filters",
-          "Individual quantile calls are only 0.15ms each",
-          "10 quantile calls + 2 filters = 6.1ms theoretical",
-          "Actual measured: 1.67ms original, 1.01ms fused",
-          "1.65x speedup from single-sort multi-quantile approach",
-          "Correctness verified - all values match"
-        ],
-        "recommendation": "Use compute_masked_quantiles which does single sort per filtered set instead of multiple separate quantile calls"
+        "original_ms": 1.782,
+        "fused_ms": 1.053,
+        "speedup_x": 1.69
       }
     },
     {
@@ -175,66 +168,201 @@
       "kind": "benchmark",
       "files": [
         "verl/utils/kernel/kernels.py",
-        "scripts/"
+        "scripts/benchmark_linear_cross_entropy.py",
+        "tests/test_linear_cross_entropy_kernels.py"
       ],
-      "benchmark": "TODO: add CE benchmark matrix script",
-      "test": "TODO: add CE parity tests",
+      "benchmark": "python scripts/benchmark_linear_cross_entropy.py --num-tokens 4096 --hidden-size 4096 --vocab-size 32768 --dtype bfloat16 --benchmark all --backward-method split_n --warmup 3 --iters 6",
+      "test": "python -m unittest tests.test_linear_cross_entropy_kernels -v",
       "results": {
-        "findings": [
-          "Ran CE benchmark matrix across 8 shapes (2 token sizes x 2 hidden sizes x 2 vocab sizes)",
-          "Forward times: 51-138ms depending on shape",
-          "Backward times: 76-225ms depending on shape",
-          "Full fwd+bwd: 127-363ms depending on shape",
-          "Triton autotune adapts to GPU automatically",
-          "Current device-agnostic configs (BLOCK_SIZE_M/N/K, GROUP_SIZE_M) cover Ampere well",
-          "No architecture-specific config buckets needed for RTX 3070 (Ampere)"
-        ],
-        "recommendation": "Keep device-agnostic default autotune. Triton automatically selects best config per shape on each GPU. Architecture-specific buckets add complexity without measured benefit.",
-        "benchmark_matrix": "8 shapes tested, all pass with valid finite outputs"
+        "policy": "device_agnostic_autotune",
+        "matrix_status": "completed"
       }
     },
     {
       "id": "FIPO-009",
-      "title": "Fused PPO loss + metrics kernel",
+      "title": "Discounted-return reverse-scan kernel",
       "priority": "P0",
       "status": "completed",
       "owner": "main",
       "kind": "kernel",
       "files": [
-        "verl/utils/kernel/future_kl.py",
-        "tests/test_future_kl_kernels.py"
+        "verl/utils/kernel/advantage_kernels.py",
+        "verl/trainer/ppo/core_algos.py",
+        "scripts/benchmark_advantage_kernels.py",
+        "tests/test_advantage_kernels.py"
       ],
-      "benchmark": "python -c \"...\" # inline benchmark",
-      "test": "python -m unittest discover -s tests -v",
+      "benchmark": "python scripts/benchmark_advantage_kernels.py --batch-size 32 --response-len 2048 --dtype float32 --gamma 0.99 --lam 0.95 --warmup 5 --iters 10",
+      "test": "python -m unittest tests.test_advantage_kernels -v",
       "results": {
-        "speedup_x": 2.0,
-        "shapes_tested": [
-          "8x512",
-          "16x1024",
-          "32x2048",
-          "64x4096"
-        ],
-        "note": "Custom Triton kernel fusing PPO loss computation with metric gathering. Achieves ~2x speedup by combining elementwise ops and atomic reductions."
+        "discounted_returns_torch_ms": 80.444,
+        "discounted_returns_triton_ms": 0.089,
+        "discounted_returns_speedup_x": 907.04,
+        "remax_returns_torch_ms": 80.333,
+        "remax_returns_triton_ms": 0.098,
+        "remax_returns_speedup_x": 822.33
       }
     },
     {
       "id": "FIPO-010",
-      "title": "CE kernel split vocabulary optimization for large vocab sizes",
+      "title": "GAE reverse-scan kernel",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/advantage_kernels.py",
+        "verl/trainer/ppo/core_algos.py",
+        "scripts/benchmark_advantage_kernels.py",
+        "tests/test_advantage_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_advantage_kernels.py --batch-size 32 --response-len 2048 --dtype float32 --gamma 0.99 --lam 0.95 --warmup 5 --iters 10",
+      "test": "python -m unittest tests.test_advantage_kernels -v",
+      "results": {
+        "gae_torch_ms": 294.038,
+        "gae_triton_ms": 0.143,
+        "gae_speedup_x": 2059.87
+      }
+    },
+    {
+      "id": "FIPO-011",
+      "title": "CE split-vocabulary policy sweep",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/kernels.py",
+        "scripts/benchmark_linear_cross_entropy.py",
+        "tests/test_linear_cross_entropy_kernels.py"
+      ],
+      "benchmark": "python scripts/benchmark_linear_cross_entropy.py --matrix --warmup 5 --iters 20 --dtype bfloat16",
+      "test": "python -m unittest tests.test_linear_cross_entropy_kernels -v",
+      "results": {
+        "vocab_size_32768": {
+          "forward_split_1024_ms": 113.3,
+          "forward_split_2048_ms": 118.1,
+          "forward_split_4096_ms": 118.1,
+          "forward_split_8192_ms": 118.2,
+          "forward_split_16384_ms": 157.5,
+          "backward_split_8192_ms": 173.4,
+          "backward_split_16384_ms": 172.5,
+          "backward_split_32768_ms": 313.2
+        },
+        "findings": [
+          "forward_split=1024 is ~4.1% faster than baseline 4096 (113ms vs 118ms) for vocab_size=32768",
+          "forward_split > 8192 causes significant regression due to memory pressure",
+          "backward_split=16384 is already optimal for vocab_size=32768",
+          "backward_split=32768 causes 2x slowdown due to memory pressure"
+        ],
+        "recommendation": "forward_split=1024 improves forward by ~4%, backward_split=16384 is already optimal. Neither meets the >5% threshold for automatic update. Consider vocab-size-dependent dynamic selection."
+      }
+    },
+    {
+      "id": "FIPO-012",
+      "title": "Safe fused PPO vanilla-path integration",
       "priority": "P0",
       "status": "queued",
       "owner": "unclaimed",
       "kind": "kernel",
       "files": [
-        "verl/utils/kernel/kernels.py",
-        "verl/utils/kernel/linear_cross_entropy.py"
+        "verl/utils/kernel/future_kl.py",
+        "verl/trainer/ppo/core_algos.py",
+        "tests/test_future_kl_kernels.py"
       ],
-      "benchmark": "python scripts/benchmark_linear_cross_entropy.py --matrix --warmup 5 --iters 20 --dtype bfloat16",
+      "benchmark": "python scripts/benchmark_fipo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30",
       "test": "python -m unittest discover -s tests -v",
-      "results": null,
-      "note": "CE forward/backward dominate runtime at 50-225ms. Current split at 4096/16384 may not be optimal for all vocab sizes. Profile and tune split boundaries."
+      "results": null
+    }
+  ],
+    {
+      "id": "FIPO-026",
+      "title": "Fused gathered log-probability kernel",
+      "priority": "P0",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/logprob.py",
+        "scripts/benchmark_logprob_kernel.py",
+        "tests/test_logprob_kernel.py"
+      ],
+      "benchmark": "PYTHONPATH=/workspace/FIPO python scripts/benchmark_logprob_kernel.py --batch-size 16 --seq-len 2048 --warmup 3 --iters 10",
+      "test": "python -m pytest tests/test_logprob_kernel.py -v",
+      "results": {
+        "vocab_1024_naive_ms": 0.677,
+        "vocab_1024_triton_ms": 0.329,
+        "vocab_1024_speedup_x": 2.06,
+        "vocab_4096_naive_ms": 2.665,
+        "vocab_4096_triton_ms": 1.279,
+        "vocab_4096_speedup_x": 2.08,
+        "vocab_8192_naive_ms": 5.354,
+        "vocab_8192_triton_ms": 2.546,
+        "vocab_8192_speedup_x": 2.10,
+        "vocab_16384_naive_ms": 12.144,
+        "vocab_16384_triton_ms": 5.089,
+        "vocab_16384_speedup_x": 2.39,
+        "vocab_32768_naive_ms": "OOM",
+        "vocab_32768_triton_ms": 10.139,
+        "vocab_32768_speedup_x": "OOM-avoidance"
+      },
+      "note": "Online logsumexp streaming over vocab chunks. Triton kernel avoids materialising the O(B*T*V) log-softmax tensor. 2-2.4x faster than naive; handles V=32768 where naive OOMs at B=16, T=2048."
+    }
+  ],
+    {
+      "id": "FIPO-027",
+      "title": "Fused reward + KL computation kernel (all KL types)",
+      "priority": "P1",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/reward_utils.py",
+        "tests/test_reward_utils_kernel.py"
+      ],
+      "test": "python -m pytest tests/test_reward_utils_kernel.py -v",
+      "results": {
+        "kl_types_supported": ["k1", "k2", "k3", "abs"],
+        "tests_passing": 14,
+        "note": "Single-pass fused kernel; no intermediate kl tensor allocated"
+      }
+    },
+    {
+      "id": "FIPO-028",
+      "title": "Fused sequence-level reduction kernels",
+      "priority": "P1",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/seq_utils.py",
+        "tests/test_seq_utils_kernel.py"
+      ],
+      "test": "python -m pytest tests/test_seq_utils_kernel.py -v",
+      "results": {
+        "functions": ["compute_seq_logprob", "compute_seq_mean"],
+        "tests_passing": 15,
+        "note": "One Triton program per batch element; streams over T dimension"
+      }
+    },
+    {
+      "id": "FIPO-029",
+      "title": "Fused GSPO policy loss kernel",
+      "priority": "P1",
+      "status": "completed",
+      "owner": "main",
+      "kind": "kernel",
+      "files": [
+        "verl/utils/kernel/gspo_loss.py",
+        "tests/test_gspo_loss_kernel.py"
+      ],
+      "test": "python -m pytest tests/test_gspo_loss_kernel.py -v",
+      "results": {
+        "tests_passing": 17,
+        "note": "Two-pass kernel per sequence; fuses seq_kl_sum -> ratio -> clip -> reduce"
+      }
     }
   ],
   "next_recommended": [
-    "FIPO-010"
+    "FIPO-030"
   ]
 }

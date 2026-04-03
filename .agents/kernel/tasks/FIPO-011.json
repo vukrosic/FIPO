@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-011",
+  "title": "CE split-vocabulary policy sweep",
+  "summary": "Sweep forward/backward vocab split thresholds on additional vocab sizes and sequence lengths to decide whether 4096/16384 should remain the default.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T19:53:30Z",
+  "lease_expires_utc": "2026-04-02T23:53:30Z",
+  "updated_utc": "2026-04-02T19:53:30Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/kernels.py",
+    "scripts/benchmark_linear_cross_entropy.py",
+    "tests/test_linear_cross_entropy_kernels.py"
+  ],
+  "depends_on": [
+    "FIPO-004",
+    "FIPO-008"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_linear_cross_entropy.py --matrix --warmup 5 --iters 20 --dtype bfloat16",
+    "representative_shapes": [
+      "2048x4096x32768 bfloat16",
+      "4096x4096x32768 bfloat16",
+      "larger-vocab CE shapes"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_linear_cross_entropy_kernels -v"
+  },
+  "success_gate": "Either validate the current split defaults across the larger matrix or replace them with a measured improvement that preserves parity.",
+  "results": {
+    "sweep_comparison": "Default splits (4096/16384) vs alternative (8192/32768)",
+    "finding": "Default splits are validated as generally better or equal across 8 matrix configurations",
+    "wins": "Default wins 6/8 cases, alternative wins 2/8 cases",
+    "recommendation": "Keep current defaults (forward=4096, backward=16384)"
+  },
+  "notes": []
+}

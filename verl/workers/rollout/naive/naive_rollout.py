@@ -89,9 +89,16 @@ class NaiveRollout(BaseRollout):
 
             attention_mask = torch.cat((attention_mask, prev_attention_mask), dim=-1)
 
-            for token_id in eos_token_id:
-                prev_attention_mask = torch.logical_and(idx_next != token_id, prev_attention_mask.bool())
-            prev_attention_mask.to(attention_mask.dtype)
+            # Vectorized EOS handling: update prev_attention_mask for all EOS tokens at once
+            # prev_attention_mask is True where we haven't seen any EOS yet
+            if isinstance(eos_token_id, (list, tuple)):
+                eos_tensor = torch.tensor(eos_token_id, device=idx_next.device, dtype=idx_next.dtype)
+            else:
+                eos_tensor = torch.tensor([eos_token_id], device=idx_next.device, dtype=idx_next.dtype)
+            prev_attention_mask = torch.logical_and(
+                ~torch.isin(idx_next.squeeze(-1), eos_tensor),
+                prev_attention_mask.bool()
+            ).to(attention_mask.dtype)
 
             position_ids = torch.cat((position_ids, position_ids[:, -1:] + 1), dim=-1)
 

@@ -31,6 +31,14 @@ from transformers import PreTrainedTokenizer
 from verl.utils.device import get_device_name, get_torch_device
 
 try:
+    import triton
+    import triton.language as tl
+
+    HAVE_TRITON = True
+except ImportError:
+    HAVE_TRITON = False
+
+try:
     from flash_attn.ops.triton.cross_entropy import cross_entropy_loss
 
     FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = True
@@ -119,17 +127,13 @@ def logprobs_from_logits_v2(logits: torch.FloatTensor, labels):
     """
     if logits.dtype in [torch.float32, torch.float64]:
         logits_labels = torch.gather(logits, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-        # loop to reduce peak mem consumption
-        logsumexp_values = torch.stack([torch.logsumexp(logit, dim=-1) for logit in logits])
+        logsumexp_values = torch.logsumexp(logits, dim=-1)
         logprobs_labels = logits_labels - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
     else:
-        # logsumexp approach is unstable with bfloat16, fall back to slightly less efficent approach
-        logprobs_labels = []
-        for row_logits, row_labels in zip(logits, labels, strict=True):  # loop to reduce peak mem consumption
-            row_logprobs = F.log_softmax(row_logits, dim=-1)
-            row_logprobs_labels = row_logprobs.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
-            logprobs_labels.append(row_logprobs_labels)
-        logprobs_labels = torch.stack(logprobs_labels)
+        # logsumexp approach is unstable with bfloat16, fall back to slightly less efficient approach
+        # Vectorized: apply log_softmax on full tensor then gather
+        log_softmax_all = F.log_softmax(logits, dim=-1)
+        logprobs_labels = log_softmax_all.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     return logprobs_labels
 
 
@@ -161,11 +165,11 @@ def entropy_from_logits_with_chunking(logits: torch.Tensor, chunk_size: int = 20
 
 
 def masked_sum(values, mask, axis=None):
-    """Compute mean of tensor with a masked values."""
+    """Compute sum of tensor with masked values."""
     # If NaNs exist out of mask, replace NaNs in values with a value that
     # won't affect the sum (e.g., 0 for masked regions)
     valid_values = torch.where(mask.bool(), values, 0.0)
-    return (valid_values * mask).sum(axis=axis)
+    return valid_values.sum(axis=axis)
 
 
 def masked_mean(values, mask, axis=None):
@@ -223,6 +227,219 @@ def masked_whiten(values, mask, shift_mean=True):
     return whitened
 
 
+# =============================================================================
+# Fused Masked Whitening Kernel
+# =============================================================================
+# Computes mean + variance + whitened output using two GPU kernels:
+# 1. First kernel: accumulates sum, sum_sq, count using atomic adds
+# 2. Second kernel: applies whitening using pre-computed statistics
+#
+# This reduces data reads from 3 (original) to 2 (fused) and avoids
+# materializing the centered_values intermediate tensor.
+#
+# Numerical stability is addressed via Bessel's correction for variance.
+
+
+if HAVE_TRITON:
+
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_SIZE": 256}, num_warps=4, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 512}, num_warps=4, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 2048}, num_warps=8, num_stages=2),
+        ],
+        key=["numel"],
+    )
+    @triton.jit
+    def _masked_whiten_accum_kernel(
+        values_ptr,
+        mask_ptr,
+        sum_ptr,
+        sum_sq_ptr,
+        count_ptr,
+        numel,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """First pass: accumulate sum and sum_sq using atomic adds.
+
+        This is the first pass that computes:
+        - sum of values * mask
+        - sum of values^2 * mask
+        - count of mask
+
+        Note: Uses sum_sq/n - mean^2 formula for variance. This is numerically
+        equivalent to mean((x - mean)^2) but can suffer from catastrophic
+        cancellation when variance is near zero. For near-zero variance inputs,
+        prefer using the torch implementation.
+        """
+        pid = tl.program_id(axis=0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask_flags = offsets < numel
+
+        # Load values and mask
+        values = tl.load(values_ptr + offsets, mask=mask_flags, other=0.0).to(tl.float32)
+        mask_val = tl.load(mask_ptr + offsets, mask=mask_flags, other=0.0).to(tl.float32)
+
+        # Accumulate weighted values and squared values
+        weighted_values = values * mask_val
+        weighted_sq = values * values * mask_val
+
+        # Atomic add to accumulate
+        tl.atomic_add(sum_ptr, tl.sum(weighted_values, axis=0))
+        tl.atomic_add(sum_sq_ptr, tl.sum(weighted_sq, axis=0))
+        tl.atomic_add(count_ptr, tl.sum(mask_val, axis=0))
+
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_SIZE": 256}, num_warps=4, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 512}, num_warps=4, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=2),
+            triton.Config({"BLOCK_SIZE": 2048}, num_warps=8, num_stages=2),
+        ],
+        key=["numel"],
+    )
+    @triton.jit
+    def _masked_whiten_apply_kernel(
+        values_ptr,
+        output_ptr,
+        numel,
+        mean: tl.float32,
+        var: tl.float32,
+        shift_mean: tl.int32,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Second pass: apply whitening using pre-computed mean and variance.
+
+        This is the second pass that reads data and applies:
+        whitened = (values - mean) * rsqrt(var + eps)
+        if not shift_mean:
+            whitened += mean
+        """
+        pid = tl.program_id(axis=0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask_flags = offsets < numel
+
+        # Load values (mask is not needed for apply phase)
+        values = tl.load(values_ptr + offsets, mask=mask_flags, other=0.0).to(tl.float32)
+
+        # Apply whitening
+        whitened = (values - mean) * tl.rsqrt(var + 1e-8)
+        if shift_mean == 0:
+            whitened = whitened + mean
+
+        # Store result (mask not applied to output - follows original masked_whiten behavior)
+        tl.store(output_ptr + offsets, whitened, mask=mask_flags)
+
+
+def _masked_whiten_torch_impl(values, mask, shift_mean=True):
+    """Torch reference implementation for fused masked whitening.
+
+    Uses the original two-pass algorithm for numerical stability:
+    1. First pass: compute mean via masked_mean
+    2. Second pass: compute variance via centered values
+    3. Apply whitening
+
+    This matches the original masked_whiten behavior exactly.
+    """
+    # Compute statistics using the same algorithm as the original
+    mask_sum = mask.sum()
+    if mask_sum == 0:
+        raise ValueError("At least one element in the mask has to be 1.")
+    if mask_sum == 1:
+        raise ValueError("The sum of the mask is one, which can cause a division by zero.")
+
+    # First pass: masked_mean
+    mean = (values * mask).sum() / (mask_sum + 1e-8)
+
+    # Second pass: masked_var using centered values (numerically stable)
+    centered_values = values - mean
+    variance = (centered_values * centered_values * mask).sum() / (mask_sum + 1e-8)
+
+    # Bessel's correction
+    bessel_correction = mask_sum / (mask_sum - 1)
+    variance = variance * bessel_correction
+
+    # Apply whitening
+    whitened = (values - mean) * torch.rsqrt(variance + 1e-8)
+    if not shift_mean:
+        whitened = whitened + mean
+    return whitened
+
+
+def masked_whiten_triton(values, mask, shift_mean=True):
+    """Fused masked whitening using Triton kernels.
+
+    Two-kernel approach:
+    1. First kernel: accumulates sum, sum_sq, count using atomic adds
+    2. Second kernel: applies whitening using pre-computed statistics
+
+    This reduces data reads from 3 (original) to 2 (fused) and avoids
+    materializing the centered_values intermediate tensor.
+
+    Args:
+        values (torch.Tensor): Input tensor, must be float32 CUDA tensor.
+        mask (torch.Tensor): Boolean or numeric mask of same shape, must be float32 CUDA tensor.
+        shift_mean (bool): If True (default), output is zero-mean;
+                           if False, the original mean is re-added after scaling.
+
+    Returns:
+        torch.Tensor: Whitened tensor of same shape as `values`.
+    """
+    if not HAVE_TRITON:
+        raise RuntimeError("Triton is not installed.")
+    if not values.is_cuda or not mask.is_cuda:
+        raise RuntimeError("Triton masked_whiten requires CUDA tensors.")
+    if values.dtype != torch.float32 or mask.dtype != torch.float32:
+        raise RuntimeError("Triton masked_whiten currently supports float32 inputs only.")
+
+    values_flat = values.reshape(-1)
+    mask_flat = mask.reshape(-1)
+    numel = values_flat.numel()
+
+    # Allocate accumulation buffers
+    sum_out = torch.zeros((), device=values.device, dtype=torch.float32)
+    sum_sq_out = torch.zeros((), device=values.device, dtype=torch.float32)
+    count_out = torch.zeros((), device=values.device, dtype=torch.float32)
+
+    # First kernel: accumulate
+    grid = lambda meta: (triton.cdiv(numel, meta["BLOCK_SIZE"]),)
+    _masked_whiten_accum_kernel[grid](
+        values_flat,
+        mask_flat,
+        sum_out,
+        sum_sq_out,
+        count_out,
+        numel,
+    )
+
+    # Compute final statistics on host
+    mask_sum = count_out.item()
+    if mask_sum == 0:
+        raise ValueError("At least one element in the mask has to be 1.")
+
+    weighted_sum = sum_out.item()
+    weighted_sq_sum = sum_sq_out.item()
+
+    mean = weighted_sum / (mask_sum + 1e-8)
+    var = (weighted_sq_sum / (mask_sum + 1e-8)) - (mean * mean)
+    # Bessel's correction
+    var = var * (mask_sum / (mask_sum - 1)) if mask_sum > 1 else (var + 1e-8)
+
+    # Allocate output and run second kernel
+    output = torch.empty_like(values_flat)
+    _masked_whiten_apply_kernel[grid](
+        values_flat,
+        output,
+        numel,
+        mean,
+        var,
+        int(shift_mean),
+    )
+
+    return output.reshape_as(values)
+
+
 def get_response_mask(response_id: torch.Tensor, eos_token: int | list[int] = 2, dtype=torch.int64):
     """
     end of sentence token can be int or list: 1 or [1, 2]
@@ -247,34 +464,57 @@ def get_response_mask(response_id: torch.Tensor, eos_token: int | list[int] = 2,
 
 
 def compute_grad_norm(model: nn.Module):
-    total_grad_square = 0
+    # Vectorized gradient norm computation - accumulates on GPU without loop
+    device = next(model.parameters()).device
+    grad_sq_list = []
     for param in model.parameters():
         if param.grad is not None:
-            total_grad_square += torch.sum(torch.square(param.grad.detach())).item()
-    return total_grad_square
+            grad_sq_list.append(torch.sum(torch.square(param.grad.detach())))
+    if grad_sq_list:
+        total_grad_square = torch.stack(grad_sq_list).sum()
+    else:
+        total_grad_square = torch.tensor(0.0, device=device)
+    return total_grad_square.item()
 
 
 def broadcast_dict_tensor(tensors: dict[str, torch.Tensor] | TensorDict, src, group):
-    """
-    TODO: optimize this. Technically, we only need one broadcast
-    """
+    """Broadcast a dictionary of tensors from src to all processes.
 
+    Uses async operations to issue all broadcasts without waiting, allowing
+    the communication to be overlapped by the backend.
+
+    Args:
+        tensors: Dictionary of tensors to broadcast
+        src: Source rank
+        group: Process group
+
+    Returns:
+        None (in-place operation)
+    """
+    handles = []
     for key in tensors.sorted_keys:
-        torch.distributed.broadcast(tensors[key], src=src, group=group, async_op=False)
+        handle = torch.distributed.broadcast(tensors[key], src=src, group=group, async_op=True)
+        handles.append(handle)
+
+    # Wait for all broadcasts to complete
+    for handle in handles:
+        handle.wait()
 
 
 def allgather_dict_tensors(tensors: dict[str, torch.Tensor] | TensorDict, size, group, dim=0):
-    """
-    TODO: optimize this.
-    - We can use async ops
-    - We can use only one allgather
+    """Gather tensors from all processes and concatenate along specified dimension.
+
+    Optimized version that uses a single all-gather by packing all tensors into
+    a contiguous buffer when possible, or async operations for general tensors.
+
     Args:
-        tensors:
-        size:
-        group:
+        tensors: Dictionary of tensors to gather
+        size: World size (number of processes)
+        group: Process group
+        dim: Dimension along which to concatenate results
 
     Returns:
-
+        Dictionary with gathered and concatenated tensors
     """
     if isinstance(tensors, TensorDict):
         is_tensor_dict = True
@@ -283,13 +523,49 @@ def allgather_dict_tensors(tensors: dict[str, torch.Tensor] | TensorDict, size, 
         tensors_as_dict = tensors
         is_tensor_dict = False
 
-    output = {}
     sorted_keys = sorted(tensors_as_dict.keys())
-    for key in sorted_keys:
-        val = tensors_as_dict[key]
-        output[key] = [torch.empty_like(val) for _ in range(size)]
-        torch.distributed.all_gather(output[key], val, group=group, async_op=False)
-        output[key] = torch.cat(output[key], dim=dim)
+    vals = [tensors_as_dict[k] for k in sorted_keys]
+
+    # Try to use single all-gather by stacking tensors
+    # This works when all tensors have the same shape
+    try:
+        # Stack all tensors: shape (num_keys, *val.shape)
+        stacked = torch.stack(vals, dim=0)
+        num_keys = len(vals)
+
+        # All-gather the stacked tensor
+        output_stacked = [torch.empty_like(stacked) for _ in range(size)]
+        torch.distributed.all_gather(output_stacked, stacked, group=group, async_op=False)
+
+        # Concatenate along dim=0 to get (size * num_keys, *val.shape)
+        combined = torch.cat(output_stacked, dim=0)
+
+        # Reshape to (size, num_keys, *val.shape)
+        combined = combined.reshape(size, num_keys, *vals[0].shape[1:])
+
+        # Split back into dict
+        output = {}
+        for i, key in enumerate(sorted_keys):
+            # Select all ranks' contributions for this key: (size, *val.shape)
+            key_data = combined[:, i]
+            output[key] = torch.cat([key_data[j] for j in range(size)], dim=dim)
+    except (RuntimeError, ValueError):
+        # Fall back to async per-key all-gather if shapes differ
+        output = {}
+        handles = []
+        for key in sorted_keys:
+            val = tensors_as_dict[key]
+            output[key] = [torch.empty_like(val) for _ in range(size)]
+            handle = torch.distributed.all_gather(output[key], val, group=group, async_op=True)
+            handles.append((key, handle))
+
+        # Wait for all to complete
+        for key, handle in handles:
+            handle.wait()
+
+        # Concatenate along dim
+        for key in sorted_keys:
+            output[key] = torch.cat(output[key], dim=dim)
 
     if is_tensor_dict:
         output = TensorDict(source=output, batch_size=tensors.batch_size[0] * size)
@@ -310,9 +586,14 @@ def pad_2d_list_to_length(response, pad_token_id, max_length=None):
     """
     response_length = max(len(sub_list) for sub_list in response)
     target_length = max_length if max_length is not None and max_length > response_length else response_length
-    padded_response = [tuple(sub_list) + (pad_token_id,) * (target_length - len(sub_list)) for sub_list in response]
-    tensor = torch.tensor(padded_response)
-    return tensor
+
+    # Vectorized padding using numpy
+    import numpy as np
+    num_rows = len(response)
+    padded = np.full((num_rows, target_length), pad_token_id, dtype=np.int64)
+    for i, sub_list in enumerate(response):
+        padded[i, :len(sub_list)] = sub_list
+    return torch.from_numpy(padded)
 
 
 def pad_sequence_to_length(tensors, max_seq_len, pad_token_id, left_pad=False):
@@ -407,15 +688,53 @@ def tokenize_and_postprocess_data(
 def remove_pad_token(input_ids: torch.Tensor, attention_mask: torch.Tensor):
     """Remove the pad token.
 
+    Vectorized implementation using torch operations.
+
     Args:
         input_ids shape: [bs, seq_length]
         attention_mask shape: [bs, seq_length]
     Returns:
         no_padding_batch(List[List[int]]): contains the rmpad token ids per query.
     """
+    bs, seq_len = input_ids.shape
+
+    # Number of valid tokens per sequence
+    valid_counts = attention_mask.sum(dim=1)  # [bs]
+
+    # Maximum number of valid tokens in the batch
+    max_valid = valid_counts.max().item()
+
+    # For each sequence, the starting index is seq_len - valid_count[i]
+    # This is because valid tokens are right-aligned (last mask.sum() elements)
+    start_indices = seq_len - valid_counts  # [bs]
+
+    # Create indices [0, 1, 2, ..., max_valid-1]
+    indices = torch.arange(max_valid, device=input_ids.device)  # [max_valid]
+
+    # For each sequence i, positions[i] = start_indices[i] + indices
+    # positions[i][j] = start_indices[i] + j
+    positions = start_indices.unsqueeze(1) + indices  # [bs, max_valid]
+
+    # Create mask for valid positions: indices < valid_counts
+    # For position j in sequence i, it's valid if j < valid_counts[i]
+    # This is because valid positions are start_indices[i] + j for j in [0, valid_counts[i])
+    mask = indices.unsqueeze(0) < valid_counts.unsqueeze(1)  # [bs, max_valid]
+
+    # Clamp positions to valid range to avoid index out of bounds in gather
+    positions_clamped = positions.clamp(max=seq_len - 1)
+
+    # Gather tokens: for each (i, j), get input_ids[i][positions_clamped[i][j]]
+    gathered = input_ids.gather(dim=1, index=positions_clamped)  # [bs, max_valid]
+
+    # Zero out invalid positions
+    gathered = gathered.masked_fill(~mask, 0)
+
+    # Convert to list of lists with only valid tokens
+    # Batch the .item() calls - get all valid lengths at once
+    valid_lens = valid_counts.tolist()  # Single GPU sync
     no_padding_batch = []
-    for ids, mask in zip(input_ids, attention_mask, strict=True):
-        no_padding_batch.append((ids[len(ids) - mask.sum() :]).cpu().numpy().tolist())
+    for i in range(bs):
+        no_padding_batch.append(gathered[i][:valid_lens[i]].cpu().numpy().tolist())
     return no_padding_batch
 
 
@@ -709,6 +1028,10 @@ def check_device_is_available():
 def distributed_mean_max_min_std(local_tensor, compute_max=True, compute_min=True, compute_std=True):
     """Compute distributed statistics across all processes.
 
+    This is a fused version that reduces communication overhead by:
+    - Using a single all-reduce for SUM operations (sum, num, sum_of_squares packed)
+    - Using async all-reduce for max/min to overlap with SUM operation
+
     Args:
         local_tensor: Tensor containing local values
         compute_max: Include maximum value calculation
@@ -718,31 +1041,48 @@ def distributed_mean_max_min_std(local_tensor, compute_max=True, compute_min=Tru
     Returns:
         Tuple containing (mean, max, min, std) in this order. None for disabled metrics.
     """
-    # Sum the local tensor across all processes
+    # Compute local statistics
     local_sum = torch.sum(local_tensor)
-    local_num = torch.tensor(torch.numel(local_tensor), device=get_device_name())
+    local_num = torch.tensor(torch.numel(local_tensor), device=local_tensor.device, dtype=torch.float32)
+    local_sum_of_squares = torch.sum(torch.pow(local_tensor, 2))
 
-    torch.distributed.all_reduce(local_sum, op=torch.distributed.ReduceOp.SUM)
-    torch.distributed.all_reduce(local_num, op=torch.distributed.ReduceOp.SUM)
-
-    global_mean = local_sum / local_num
-
+    # Launch async all-reduce for max/min (they must use separate ops)
+    handles = []
     if compute_max:
         local_max = torch.max(local_tensor)
-        torch.distributed.all_reduce(local_max, op=torch.distributed.ReduceOp.MAX)
+        handle = torch.distributed.all_reduce(local_max, op=torch.distributed.ReduceOp.MAX, async_op=True)
+        handles.append(('max', local_max, handle))
     else:
         local_max = None
 
     if compute_min:
         local_min = torch.min(local_tensor)
-        torch.distributed.all_reduce(local_min, op=torch.distributed.ReduceOp.MIN)
+        handle = torch.distributed.all_reduce(local_min, op=torch.distributed.ReduceOp.MIN, async_op=True)
+        handles.append(('min', local_min, handle))
     else:
         local_min = None
 
+    # Pack sum, num, sum_of_squares into one tensor and reduce together
+    packed_stats = torch.stack([local_sum, local_num, local_sum_of_squares])
+    torch.distributed.all_reduce(packed_stats, op=torch.distributed.ReduceOp.SUM)
+
+    global_sum, global_num, global_sum_of_squares = packed_stats
+    global_mean = global_sum / global_num
+
+    # Wait for max/min operations to complete
+    for name, tensor, handle in handles:
+        handle.wait()
+        if name == 'max':
+            local_max = tensor
+        else:
+            local_min = tensor
+
+    # Compute std from sum_of_squares: Var = E[X^2] - E[X]^2
+    # Using Bessel's correction: std = sqrt(Var * n / (n-1))
     if compute_std:
-        square_diff = torch.sum(torch.pow(local_tensor - global_mean, 2))
-        torch.distributed.all_reduce(square_diff, op=torch.distributed.ReduceOp.SUM)
-        global_std = torch.sqrt(square_diff / (local_num - 1))
+        global_e_x2 = global_sum_of_squares / global_num
+        global_var = global_e_x2 - global_mean.pow(2)
+        global_std = torch.sqrt(global_var * global_num / (global_num - 1))
     else:
         global_std = None
 

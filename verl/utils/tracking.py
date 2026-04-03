@@ -295,9 +295,7 @@ class ValidationGenerationsLogger:
         """Log samples to wandb as a table"""
 
         # Create column names for all samples
-        columns = ["step"] + sum(
-            [[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples))], []
-        )
+        columns = ["step"] + [f"{prefix}_{i + 1}" for i in range(len(samples)) for prefix in ["input", "output", "score"]]
 
         if not hasattr(self, "validation_table"):
             # Initialize the table on first call

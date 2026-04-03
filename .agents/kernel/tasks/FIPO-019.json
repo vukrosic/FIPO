@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-019",
+  "title": "REINFORCE++ baseline vectorization",
+  "summary": "Replace 3-pass Python loop REINFORCE++ baseline computation with index_add-based vectorization.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/advantage_kernels.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_group_advantage_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_group_advantage.py",
+    "representative_shapes": [
+      "batch_size=512, response_len=1024, num_groups=64"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_group_advantage_kernels -v"
+  },
+  "success_gate": "Vectorized kernel matches reference with 3x+ speedup.",
+  "results": {
+    "speedup": "3.5x (batch=512, response_len=1024, num_groups=64)",
+    "approach": "Uses index_add_ for per-group accumulation, includes whitening",
+    "tests": "4 new tests passing"
+  },
+  "notes": []
+}

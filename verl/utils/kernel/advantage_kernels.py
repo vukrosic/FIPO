@@ -333,3 +333,383 @@ def compute_gae_advantages_returns(
         )
 
     raise ValueError(f"Unsupported GAE implementation: {impl}")
+
+
+# =============================================================================
+# GRPO-style group advantage (vectorized with index_add)
+# =============================================================================
+
+
+def compute_grpo_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized GRPO advantage computation using index_add for per-group accumulation.
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+        norm_adv_by_std_in_grpo: whether to scale advantage by std
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for GRPO
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Group accumulators
+    group_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_squares = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+
+    # Efficient per-group accumulation using index_add
+    group_sums.index_add_(0, index_tensor, scores)
+    group_squares.index_add_(0, index_tensor, scores.square())
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+
+    # Compute mean and std
+    group_means = group_sums / (group_counts + epsilon)
+    # Use sample variance (n-1 denominator) to match torch.std behavior
+    group_var = (group_squares / (group_counts + epsilon) - group_means.square()) * (group_counts / (group_counts - 1 + epsilon))
+    group_stds = torch.sqrt(group_var + epsilon)
+    # For groups of size 1, set std=1 and mean=0 to match reference behavior
+    group_stds = torch.where(group_counts > 1, group_stds, torch.ones_like(group_stds))
+    group_means = torch.where(group_counts > 1, group_means, torch.zeros_like(group_means))
+
+    # Broadcast back to original order
+    orig_means = group_means[index_tensor]
+    orig_stds = group_stds[index_tensor]
+
+    if norm_adv_by_std_in_grpo:
+        advantages = (scores - orig_means) / (orig_stds + epsilon)
+    else:
+        advantages = scores - orig_means
+
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+# =============================================================================
+# RLOO-style group advantage (vectorized with index_add)
+# =============================================================================
+
+
+def compute_rloo_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized RLOO advantage computation using index_add for per-group accumulation.
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for RLOO
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Group sums and counts
+    group_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+
+    group_sums.index_add_(0, index_tensor, scores)
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+
+    # Group means
+    group_means = group_sums / (group_counts + epsilon)
+
+    # Compute per-sample RLOO score: r_i * n/(n-1) - mean * n/(n-1)
+    n = group_counts[index_tensor]
+    factor = n / (n - 1 + epsilon)
+    advantages = scores * factor - group_means[index_tensor] * factor
+
+    # For n=1, keep the original score (the RLOO formula is not defined for n=1)
+    advantages = torch.where(n > 1, advantages, scores)
+
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+# =============================================================================
+# OPO-style group advantage (vectorized with index_add)
+# =============================================================================
+
+
+def compute_opo_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized OPO advantage computation using index_add for per-group accumulation.
+
+    OPO computes a length-normalized baseline per group: sum(len_i * score_i) / sum(len_i)
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for OPO
+    """
+    response_length = response_mask.sum(dim=-1)  # (bs,)
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Group weighted sums, length sums, and counts
+    # baseline = sum(len_i * score_i) / sum(len_i)
+    group_weighted_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_length_sums = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+
+    weighted_scores = response_length * scores  # len_i * score_i
+    group_weighted_sums.index_add_(0, index_tensor, weighted_scores)
+    group_length_sums.index_add_(0, index_tensor, response_length.float())
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+
+    # Compute baseline per group
+    group_baselines = group_weighted_sums / (group_length_sums + epsilon)
+    # For groups of size 1, set baseline=0 to match reference behavior
+    group_baselines = torch.where(group_counts > 1, group_baselines, torch.zeros_like(group_baselines))
+
+    # Broadcast back and subtract baseline
+    advantages = scores - group_baselines[index_tensor]
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+# =============================================================================
+# GPG-style group advantage (vectorized with index_add)
+# =============================================================================
+
+
+def compute_gpg_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+    f_norm: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized GPG advantage computation using index_add for per-group accumulation.
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+        f_norm: float normalization factor
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for GPG
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Group accumulators
+    group_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+
+    group_sums.index_add_(0, index_tensor, scores)
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+
+    # Compute alpha: bsz / non_zero_count
+    m = torch.count_nonzero(scores)
+    alpha = bsz / m.clamp(min=1)
+
+    # Compute mean
+    group_means = group_sums / (group_counts + epsilon)
+    # For groups of size 1, set mean=0 to match reference behavior
+    group_means = torch.where(group_counts > 1, group_means, torch.zeros_like(group_means))
+
+    # Broadcast back and apply GPG formula
+    orig_means = group_means[index_tensor]
+    advantages = alpha * (scores - orig_means) / f_norm
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+# =============================================================================
+# GRPO_PASSK-style group advantage (vectorized with topk + scatter)
+# =============================================================================
+
+
+def compute_grpo_passk_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized GRPO Pass@k advantage computation using topk and scatter.
+
+    The advantage is computed as r_max - r_second_max for each group,
+    assigned only to the sample with r_max.
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+        norm_adv_by_std_in_grpo: whether to scale advantage by std
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for GRPO
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Compute per-group statistics for std normalization
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+    group_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_squares = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+    group_sums.index_add_(0, index_tensor, scores)
+    group_squares.index_add_(0, index_tensor, scores.square())
+
+    # Compute mean and std per group
+    group_means = group_sums / (group_counts + epsilon)
+    group_var = (group_squares / (group_counts + epsilon) - group_means.square()) * (
+        group_counts / (group_counts - 1 + epsilon)
+    )
+    group_stds = torch.sqrt(group_var + epsilon)
+    # For groups of size 1, set std=1 to match reference behavior
+    group_stds = torch.where(group_counts > 1, group_stds, torch.ones_like(group_stds))
+
+    # Find top-2 per group using topk on reshaped view
+    # Assumes equal group sizes (standard GRPO assumption)
+    k = bsz // num_groups
+    assert bsz % num_groups == 0, f"GRPO_PASSK requires equal group sizes, got bsz={bsz}, num_groups={num_groups}"
+
+    # Reshape scores to (num_groups, k) for per-group topk
+    scores_view = scores.view(num_groups, k)
+    sorted_values, sorted_indices = torch.sort(scores_view, dim=1, descending=True)
+
+    # max is at sorted_indices[:, 0], second max at sorted_indices[:, 1]
+    max_values = sorted_values[:, 0]
+    second_max_values = sorted_values[:, 1]
+
+    # Map local indices to global flattened indices
+    # group_offsets[g] = g * k (starting index of group g in flattened array)
+    group_offsets = torch.arange(num_groups, device=scores.device, dtype=torch.long) * k
+    max_global_idx = group_offsets + sorted_indices[:, 0]
+    second_max_global_idx = group_offsets + sorted_indices[:, 1]
+
+    # Compute advantage: r_max - r_second_max
+    adv_per_group = max_values - second_max_values
+    if norm_adv_by_std_in_grpo:
+        adv_per_group = adv_per_group / (group_stds + epsilon)
+
+    # Scatter advantages to original positions (only the max sample gets non-zero)
+    advantages = torch.zeros(bsz, device=scores.device, dtype=scores.dtype)
+    advantages[max_global_idx] = adv_per_group
+
+    advantages = advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+# =============================================================================
+# REINFORCE++ baseline-style group advantage (vectorized with index_add)
+# =============================================================================
+
+
+def compute_reinforce_plus_plus_baseline_outcome_advantage_torch(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    epsilon: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized REINFORCE++ baseline advantage computation using index_add for per-group accumulation.
+
+    The algorithm:
+    1. Group scores by index
+    2. For groups of size 1: mean = 0
+    3. For groups of size > 1: mean = average of scores in group
+    4. Subtract mean from each score
+    5. Tile to full sequence length and apply response mask
+    6. Apply masked whitening
+    7. Apply response mask again
+
+    Args:
+        token_level_rewards: (bs, response_length)
+        response_mask: (bs, response_length)
+        index: (bs,) - group ID per sample
+        epsilon: float for numerical stability
+
+    Returns:
+        advantages: (bs, response_length)
+        returns: (bs, response_length) - same as advantages for REINFORCE++ baseline
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+    bsz = scores.shape[0]
+    num_groups = int(index.max()) + 1
+    index_tensor = index.to(torch.long)
+
+    # Group accumulators
+    group_sums = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype)
+    group_counts = torch.zeros(num_groups, device=scores.device, dtype=torch.float32)
+
+    # Efficient per-group accumulation using index_add
+    group_sums.index_add_(0, index_tensor, scores)
+    group_counts.index_add_(0, index_tensor, torch.ones(bsz, device=scores.device, dtype=torch.float32))
+
+    # Compute group means
+    # For groups of size 1, set mean=0 to match reference behavior
+    group_means = group_sums / (group_counts + epsilon)
+    group_means = torch.where(group_counts > 1, group_means, torch.zeros_like(group_means))
+
+    # Broadcast back and subtract mean
+    advantages = scores - group_means[index_tensor]
+
+    # Tile to full sequence length and apply response mask
+    response_length = response_mask.shape[-1]
+    advantages = advantages.unsqueeze(-1).tile([1, response_length]) * response_mask
+
+    # Apply masked whitening (same as verl_F.masked_whiten)
+    # Compute masked mean: sum(values * mask) / sum(mask)
+    mask_sum = response_mask.sum()
+    masked_mean = (advantages * response_mask).sum() / (mask_sum + epsilon)
+    # Compute masked variance with Bessel's correction
+    centered = advantages - masked_mean
+    masked_var = (centered * centered * response_mask).sum() / (mask_sum - 1 + epsilon)
+    # Whiten: (values - mean) / sqrt(var)
+    advantages = centered * torch.rsqrt(masked_var + epsilon)
+
+    # Apply response mask again
+    advantages = advantages * response_mask
+
+    return advantages, advantages

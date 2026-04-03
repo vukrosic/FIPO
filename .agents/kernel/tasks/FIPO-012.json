@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-012",
+  "title": "Safe fused PPO vanilla-path integration",
+  "summary": "Extend the existing fused PPO helper so it can replace the vanilla policy-loss hot path without losing pg_clipfrac_lower, aggregation semantics, or scalar metrics.",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T19:50:17Z",
+  "lease_expires_utc": "2026-04-02T23:50:17Z",
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "verl/trainer/ppo/core_algos.py",
+    "tests/test_future_kl_kernels.py"
+  ],
+  "depends_on": [
+    "FIPO-007"
+  ],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_fipo_loss.py --batch-size 32 --response-len 2048 --warmup 10 --iters 30",
+    "representative_shapes": [
+      "32x2048 float32 vanilla PPO path"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "success_gate": "Only integrate if the fused helper preserves vanilla PPO semantics, supports the required aggregation mode, and wins on the representative end-to-end path.",
+  "results": {
+    "integration": "compute_fused_ppo_loss integrated into compute_policy_loss_vanilla for loss_agg_mode == token-mean",
+    "kernel_extension": "pg_clipfrac_lower added as 5th return value to compute_fused_ppo_loss",
+    "tests": "21 tests passing",
+    "end_to_end": "benchmark_fipo_loss.py runs successfully"
+  },
+  "notes": []
+}

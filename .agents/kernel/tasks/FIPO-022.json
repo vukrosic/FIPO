@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-022",
+  "title": "Entropy loss triton fix + speedup",
+  "summary": "Fixed triton entropy loss kernel bug and achieved 11.9x speedup.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/kernel/future_kl.py",
+    "tests/test_entropy_loss_kernel.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python -m unittest tests.test_entropy_loss_kernel -v",
+    "representative_shapes": [
+      "entropy computation vocab=4096"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_entropy_loss_kernel -v"
+  },
+  "success_gate": "Kernel produces correct results with significant speedup.",
+  "results": {
+    "speedup": "11.9x (3.97ms -> 0.34ms)",
+    "fix": "Zeroing padding positions in softmax computation"
+  },
+  "notes": []
+}

@@ -1,0 +1,24 @@
+{
+  "id": "FIPO-026",
+  "title": "Fused gathered log-probability kernel",
+  "priority": "P0",
+  "status": "completed",
+  "owner": "main",
+  "kind": "kernel",
+  "description": "Triton kernel that computes per-token log-probabilities from (B,T,V) logits without materialising the full log-softmax tensor. Uses the online logsumexp trick to stream over the vocab dimension in BLOCK_V chunks.",
+  "files": [
+    "verl/utils/kernel/logprob.py",
+    "scripts/benchmark_logprob_kernel.py",
+    "tests/test_logprob_kernel.py"
+  ],
+  "benchmark": "PYTHONPATH=/workspace/FIPO python scripts/benchmark_logprob_kernel.py --batch-size 16 --seq-len 2048 --warmup 3 --iters 10",
+  "test": "python -m pytest tests/test_logprob_kernel.py -v",
+  "results": {
+    "vocab_1024_speedup_x": 2.06,
+    "vocab_4096_speedup_x": 2.08,
+    "vocab_8192_speedup_x": 2.10,
+    "vocab_16384_speedup_x": 2.39,
+    "vocab_32768_naive": "OOM",
+    "vocab_32768_triton_ms": 10.139
+  }
+}

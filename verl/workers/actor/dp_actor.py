@@ -441,35 +441,38 @@ class DataParallelPPOActor(BasePPOActor):
                         config=self.config,
                     )
 
-                        micro_batch_metrics["actor/influence_weights_mean"] = influence_weights_mean.detach().item()
-                        # micro_batch_metrics["actor/influence_weights_std"] = influence_weights_std.detach().item()
-                        micro_batch_metrics["actor/influence_weights_min"] = influence_weights_min.detach().item()
-                        micro_batch_metrics["actor/influence_weights_max"] = influence_weights_max.detach().item()
-                        micro_batch_metrics["actor/IW_overall_clip_ratio"] = total_clip_frac.detach().item()
-                        micro_batch_metrics["actor/IW_upper_clip_ratio"] = clip_frac_upper.detach().item()
-                        micro_batch_metrics["actor/IW_lower_clip_ratio"] = clip_frac_lower.detach().item()
-                        # raw influence weight (before clip)
-                        micro_batch_metrics["actor/influence_weights_mean_raw"] = influence_weights_mean_raw.detach().item()
-                        micro_batch_metrics["actor/raw_influence_weights_min"] = raw_influence_weights_min.detach().item()
-                        micro_batch_metrics["actor/raw_influence_weights_max"] = raw_influence_weights_max.detach().item()
-                        # negative sample importance sampling ratio info
-                        micro_batch_metrics["actor/neg_ratio_2_3"] = neg_ratio_2_3.detach().item()
-                        micro_batch_metrics["actor/neg_ratio_3_4"] = neg_ratio_3_4.detach().item()
-                        micro_batch_metrics["actor/neg_ratio_4_10"] = neg_ratio_4_10.detach().item()
-                        # negative sample IS ratio basic stats
-                        micro_batch_metrics["actor/neg_is_max"] = neg_is_max.detach().item()
-                        micro_batch_metrics["actor/neg_is_p995"] = neg_is_p995.detach().item()
-                        micro_batch_metrics["actor/neg_is_p999"] = neg_is_p999.detach().item()
-                        micro_batch_metrics["actor/neg_is_p75"] = neg_is_p75.detach().item()
-                        # postive sample IS ratio basic stats
-                        micro_batch_metrics["actor/pos_is_max"] = pos_is_max.detach().item()
-                        micro_batch_metrics["actor/pos_is_median"] = pos_is_median.detach().item()
-                        micro_batch_metrics["actor/pos_is_p75"] = pos_is_p75.detach().item()
-                        micro_batch_metrics["actor/pos_is_p995"] = pos_is_p995.detach().item()
-                        micro_batch_metrics["actor/pos_is_p999"] = pos_is_p999.detach().item()
-                        micro_batch_metrics["actor/pos_is_p25"] = pos_is_p25.detach().item()
-                        micro_batch_metrics["actor/pos_is_min"] = pos_is_min.detach().item()
-                        micro_batch_metrics["actor/pos_mini_frac"] = pos_mini_frac.detach().item()
+                        # Build metric tensors first, then extract values with single sync point
+                        metric_tensors = {
+                            "actor/influence_weights_mean": influence_weights_mean,
+                            "actor/influence_weights_min": influence_weights_min,
+                            "actor/influence_weights_max": influence_weights_max,
+                            "actor/IW_overall_clip_ratio": total_clip_frac,
+                            "actor/IW_upper_clip_ratio": clip_frac_upper,
+                            "actor/IW_lower_clip_ratio": clip_frac_lower,
+                            # raw influence weight (before clip)
+                            "actor/influence_weights_mean_raw": influence_weights_mean_raw,
+                            "actor/raw_influence_weights_min": raw_influence_weights_min,
+                            "actor/raw_influence_weights_max": raw_influence_weights_max,
+                            # negative sample importance sampling ratio info
+                            "actor/neg_ratio_2_3": neg_ratio_2_3,
+                            "actor/neg_ratio_3_4": neg_ratio_3_4,
+                            "actor/neg_ratio_4_10": neg_ratio_4_10,
+                            # negative sample IS ratio basic stats
+                            "actor/neg_is_max": neg_is_max,
+                            "actor/neg_is_p995": neg_is_p995,
+                            "actor/neg_is_p999": neg_is_p999,
+                            "actor/neg_is_p75": neg_is_p75,
+                            # postive sample IS ratio basic stats
+                            "actor/pos_is_max": pos_is_max,
+                            "actor/pos_is_median": pos_is_median,
+                            "actor/pos_is_p75": pos_is_p75,
+                            "actor/pos_is_p995": pos_is_p995,
+                            "actor/pos_is_p999": pos_is_p999,
+                            "actor/pos_is_p25": pos_is_p25,
+                            "actor/pos_is_min": pos_is_min,
+                            "actor/pos_mini_frac": pos_mini_frac,
+                        }
+                        micro_batch_metrics = {k: v.detach().item() for k, v in metric_tensors.items()}
 
                         # Collect data for global logging
                         micro_batch_metrics["actor/global_log_buffer"] = {

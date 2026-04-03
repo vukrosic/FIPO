@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-024",
+  "title": "Distributed comm fusion",
+  "summary": "Fused multiple sequential all-reduce/broadcast operations using async ops and batching.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/torch_functional.py",
+    "tests/test_distributed_fused_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python tests/benchmark_distributed_fused.py",
+    "representative_shapes": [
+      "distributed_mean_max_min_std with async max/min",
+      "broadcast_dict_tensor with async ops",
+      "allgather_dict_tensors with shape-based batching"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_distributed_fused_kernels -v"
+  },
+  "success_gate": "Fused versions produce same results with reduced communication overhead.",
+  "results": {
+    "approach": "async_op=True for overlapping, batching for uniform shapes",
+    "fixes": "Fixed device mismatch bug in distributed_mean_max_min_std"
+  },
+  "notes": []
+}

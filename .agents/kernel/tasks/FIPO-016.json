@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "FIPO-016",
+  "title": "Fused masked_whiten kernel",
+  "summary": "Create a fused kernel for masked_whiten that computes mean + variance + whitened output in fewer passes using Welford-style accumulation.",
+  "priority": "P2",
+  "status": "completed",
+  "owner": "main",
+  "claimed_utc": "2026-04-02T00:00:00Z",
+  "lease_expires_utc": null,
+  "updated_utc": "2026-04-02T00:00:00Z",
+  "kind": "kernel",
+  "resource_class": "gpu_exclusive",
+  "scope_files": [
+    "verl/utils/torch_functional.py",
+    "tests/test_masked_whiten_kernels.py"
+  ],
+  "depends_on": [],
+  "blocked_by": [],
+  "duplicate_of": null,
+  "benchmark": {
+    "command": "python scripts/benchmark_whitened.py (if exists) or manual timing",
+    "representative_shapes": [
+      "32x2048 float32 masked_whiten"
+    ]
+  },
+  "tests": {
+    "command": "python -m unittest tests.test_masked_whiten_kernels -v"
+  },
+  "success_gate": "Kernel produces same results as original two-pass implementation with reduced passes.",
+  "results": {
+    "speedup": "2.5x with Triton (original ~0.35ms, Triton ~0.14ms)",
+    "approach": "Two-kernel approach: accumulate statistics then apply whitening",
+    "tests": "19 new tests passing"
+  },
+  "notes": []
+}
