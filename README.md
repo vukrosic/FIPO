@@ -1,5 +1,32 @@
 # FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization
 
+## Kernel Optimization Fork
+
+This fork is also used as a focused kernel-optimization workspace for the VeRL/FIPO training stack. The goal is practical: find hot paths, build fused CUDA/Triton kernels, benchmark them with synchronized timings, add parity tests, and only integrate a kernel into trainer code when it wins on representative shapes.
+
+What changed in this branch:
+
+- `Future-KL`, `returns + whiten`, `logprob + entropy`, `logprobs dispatch`, `entropy dispatch`, and `geo_mean` policy loss now have fused kernel paths or dispatcher upgrades.
+- Each kernel keeps a torch reference path for correctness and regression testing.
+- Integration is gated by representative benchmarks, so slower kernels stay as standalone references instead of becoming defaults.
+
+| Area | Change | Representative gain |
+| --- | --- | --- |
+| `Future-KL` | Kept the fused reverse-scan kernel on the PPO hot path | `21.82x` on `32x2048 float32` |
+| `returns + whiten` | Fused discounted returns with whitening for REINFORCE++ | `3.28x` on `32x2048 float32` |
+| `logprob + entropy` | Combined logprob and entropy into one streaming kernel | `2.27x` on padded `16x2048x8192 float32` |
+| `logprobs_from_logits` dispatch | Routed CUDA fallback through the gathered-logprob Triton helper | `7.45x` on padded `16x2048x8192 float32` |
+| `entropy_from_logits` dispatch | Routed CUDA fallback through the streaming entropy kernel | `7.56x` on padded `16x2048x8192 float32` |
+| `geo_mean` / GMPO | Delegated the trainer path to the fused GMPO helper | `2.17x` on `32x2048` |
+
+For the kernel work log and queue, see:
+
+- [Kernel rules](./KERNEL_RULES.md)
+- [Kernel queue](./KERNEL_QUEUE.md)
+- [.agents/kernel tasks](./.agents/kernel/tasks)
+- [Kernel optimization blog](./docs/kernel_optimization_blog.md)
+- [X post draft](./docs/x_post_kernel_optimization.md)
+
 🏠 [Homepage](https://qwen-pilot.notion.site/fipo) | 📝 [Paper PDF](https://arxiv.org/abs/2603.19835) | 🤗 [Hugging Face](https://huggingface.co/QwenPilot) | 🤖 [ModelScope](https://modelscope.cn/models/chiyum609/FIPO_32B) | 🐱 [GitHub](https://github.com/qwenpilot/FIPO) | 📊 [SwanLab](https://swanlab.cn/@QwenPilot/FIPO?utm_source=website_qr&utm_medium=qr_scan)
 
 **Qwen Pilot, Alibaba Group | Published on March 20, 2026**
